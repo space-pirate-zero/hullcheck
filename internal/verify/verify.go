@@ -24,8 +24,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/spaceship-alpha-9/hullcheck/internal/manifest"
-	"github.com/spaceship-alpha-9/hullcheck/internal/model"
+	"github.com/space-pirate-zero/hullcheck/internal/manifest"
+	"github.com/space-pirate-zero/hullcheck/internal/model"
 )
 
 // DefaultTimeout bounds a single gate run. A gate that hangs is a gate that fails.

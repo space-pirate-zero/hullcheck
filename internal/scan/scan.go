@@ -6,10 +6,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/spaceship-alpha-9/hullcheck/internal/gates"
-	"github.com/spaceship-alpha-9/hullcheck/internal/match"
-	"github.com/spaceship-alpha-9/hullcheck/internal/model"
-	"github.com/spaceship-alpha-9/hullcheck/internal/rules"
+	"github.com/space-pirate-zero/hullcheck/internal/gates"
+	"github.com/space-pirate-zero/hullcheck/internal/match"
+	"github.com/space-pirate-zero/hullcheck/internal/model"
+	"github.com/space-pirate-zero/hullcheck/internal/rules"
 )
 
 // ErrNoPolicy is returned when a repository states no rules at all. It is an

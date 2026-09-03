@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/spaceship-alpha-9/hullcheck"
-	"github.com/spaceship-alpha-9/hullcheck/assist"
+	"github.com/space-pirate-zero/hullcheck"
+	"github.com/space-pirate-zero/hullcheck/assist"
 )
 
 // stub is a model that replies with whatever it is told to.

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/spaceship-alpha-9/hullcheck/internal/model"
+	"github.com/space-pirate-zero/hullcheck/internal/model"
 )
 
 func TestParsesAWellFormedManifest(t *testing.T) {

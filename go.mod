@@ -1,3 +1,3 @@
-module github.com/spaceship-alpha-9/hullcheck
+module github.com/space-pirate-zero/hullcheck
 
 go 1.24

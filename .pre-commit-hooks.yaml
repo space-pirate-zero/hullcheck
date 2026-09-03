@@ -1,7 +1,7 @@
 # Add to .pre-commit-config.yaml:
 #
 #   repos:
-#     - repo: https://github.com/spaceship-alpha-9/hullcheck
+#     - repo: https://github.com/space-pirate-zero/hullcheck
 #       rev: v0.1.0
 #       hooks:
 #         - id: hullcheck

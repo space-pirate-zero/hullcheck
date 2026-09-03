@@ -16,8 +16,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/spaceship-alpha-9/hullcheck"
-	"github.com/spaceship-alpha-9/hullcheck/assist"
+	"github.com/space-pirate-zero/hullcheck"
+	"github.com/space-pirate-zero/hullcheck/assist"
 )
 
 var version = "dev"

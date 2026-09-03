@@ -10,7 +10,7 @@ import (
 	"io"
 	"sort"
 
-	"github.com/spaceship-alpha-9/hullcheck/internal/model"
+	"github.com/space-pirate-zero/hullcheck/internal/model"
 )
 
 // stages is the Time-to-Truth ladder, fastest first.

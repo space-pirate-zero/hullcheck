@@ -1,5 +1,5 @@
 # The documented entry point:
-#   docker run --rm -v "$PWD:/repo:ro" ghcr.io/spaceship-alpha-9/hullcheck
+#   docker run --rm -v "$PWD:/repo:ro" ghcr.io/space-pirate-zero/hullcheck
 # The mount is read-only, so "never writes to your repository" is enforced by the
 # kernel rather than by our good intentions, and --rm removes the container on exit.
 FROM golang:1.24-alpine AS build

@@ -2,7 +2,7 @@
 GO ?= go
 BIN := hullcheck
 VERSION ?= dev
-MODULE := github.com/spaceship-alpha-9/hullcheck
+MODULE := github.com/space-pirate-zero/hullcheck
 
 .PHONY: all check fmt vet test deps network readonly secrets dogfood refusals build clean
 

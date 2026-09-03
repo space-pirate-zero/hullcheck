@@ -16,7 +16,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/spaceship-alpha-9/hullcheck/internal/model"
+	"github.com/space-pirate-zero/hullcheck/internal/model"
 )
 
 // Name is the file hullcheck looks for in the root of a repository.

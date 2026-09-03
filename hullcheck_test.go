@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/spaceship-alpha-9/hullcheck"
+	"github.com/space-pirate-zero/hullcheck"
 )
 
 // recorder stands in for *testing.T so the assertion helpers can be tested.

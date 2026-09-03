@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/spaceship-alpha-9/hullcheck/internal/manifest"
-	"github.com/spaceship-alpha-9/hullcheck/internal/model"
+	"github.com/space-pirate-zero/hullcheck/internal/manifest"
+	"github.com/space-pirate-zero/hullcheck/internal/model"
 )
 
 func repo(t *testing.T, files map[string]string) string {

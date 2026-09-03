@@ -19,16 +19,16 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/spaceship-alpha-9/hullcheck/internal/banner"
-	"github.com/spaceship-alpha-9/hullcheck/internal/history"
-	"github.com/spaceship-alpha-9/hullcheck/internal/insight"
-	"github.com/spaceship-alpha-9/hullcheck/internal/manifest"
-	"github.com/spaceship-alpha-9/hullcheck/internal/model"
-	"github.com/spaceship-alpha-9/hullcheck/internal/provenance"
-	"github.com/spaceship-alpha-9/hullcheck/internal/refusal"
-	"github.com/spaceship-alpha-9/hullcheck/internal/report"
-	"github.com/spaceship-alpha-9/hullcheck/internal/scan"
-	"github.com/spaceship-alpha-9/hullcheck/internal/verify"
+	"github.com/space-pirate-zero/hullcheck/internal/banner"
+	"github.com/space-pirate-zero/hullcheck/internal/history"
+	"github.com/space-pirate-zero/hullcheck/internal/insight"
+	"github.com/space-pirate-zero/hullcheck/internal/manifest"
+	"github.com/space-pirate-zero/hullcheck/internal/model"
+	"github.com/space-pirate-zero/hullcheck/internal/provenance"
+	"github.com/space-pirate-zero/hullcheck/internal/refusal"
+	"github.com/space-pirate-zero/hullcheck/internal/report"
+	"github.com/space-pirate-zero/hullcheck/internal/scan"
+	"github.com/space-pirate-zero/hullcheck/internal/verify"
 )
 
 // version is stamped at build time: -ldflags "-X main.version=v0.1.0".

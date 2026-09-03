@@ -64,13 +64,13 @@ Identical coverage, wildly different exposure.
 **GitHub Actions.** No Go toolchain, no install step, no version for you to maintain:
 
 ```yaml
-- uses: spaceship-alpha-9/hullcheck@v1
+- uses: space-pirate-zero/hullcheck@v1
 ```
 
 Report first, fail later — start by seeing the number, then ratchet:
 
 ```yaml
-- uses: spaceship-alpha-9/hullcheck@v1
+- uses: space-pirate-zero/hullcheck@v1
   with:
     fail-under: 60      # omit entirely to report without failing
 ```
@@ -102,7 +102,7 @@ failed, not what to fix.
 
 ```yaml
 repos:
-  - repo: https://github.com/spaceship-alpha-9/hullcheck
+  - repo: https://github.com/space-pirate-zero/hullcheck
     rev: v0.1.0
     hooks:
       - id: hullcheck-fail-under
@@ -112,13 +112,13 @@ repos:
 read-only:
 
 ```sh
-docker run --rm -v "$PWD:/repo:ro" ghcr.io/spaceship-alpha-9/hullcheck
+docker run --rm -v "$PWD:/repo:ro" ghcr.io/space-pirate-zero/hullcheck
 ```
 
 **Locally.**
 
 ```sh
-go install github.com/spaceship-alpha-9/hullcheck/cmd/hullcheck@latest
+go install github.com/space-pirate-zero/hullcheck/cmd/hullcheck@latest
 hullcheck .
 ```
 

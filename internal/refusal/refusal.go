@@ -18,9 +18,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/spaceship-alpha-9/hullcheck/internal/manifest"
-	"github.com/spaceship-alpha-9/hullcheck/internal/model"
-	"github.com/spaceship-alpha-9/hullcheck/internal/scratch"
+	"github.com/space-pirate-zero/hullcheck/internal/manifest"
+	"github.com/space-pirate-zero/hullcheck/internal/model"
+	"github.com/space-pirate-zero/hullcheck/internal/scratch"
 )
 
 // Verdict is the outcome of testing one declared refusal.

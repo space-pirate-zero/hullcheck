@@ -14,8 +14,8 @@ package hullcheck
 import (
 	"fmt"
 
-	"github.com/spaceship-alpha-9/hullcheck/internal/model"
-	"github.com/spaceship-alpha-9/hullcheck/internal/scan"
+	"github.com/space-pirate-zero/hullcheck/internal/model"
+	"github.com/space-pirate-zero/hullcheck/internal/scan"
 )
 
 // Verdict values, re-exported so callers need not reach into internal packages.

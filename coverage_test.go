@@ -3,7 +3,7 @@ package hullcheck_test
 import (
 	"testing"
 
-	"github.com/spaceship-alpha-9/hullcheck"
+	"github.com/space-pirate-zero/hullcheck"
 )
 
 // This is the integration this project recommends, applied to itself. If adding

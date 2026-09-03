@@ -6,7 +6,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/spaceship-alpha-9/hullcheck"
+	"github.com/space-pirate-zero/hullcheck"
 )
 
 // The system prompt is deliberately narrow. The model is drafting a gate for a

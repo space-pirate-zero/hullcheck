@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/spaceship-alpha-9/hullcheck/internal/manifest"
+	"github.com/space-pirate-zero/hullcheck/internal/manifest"
 )
 
 func repo(t *testing.T, files map[string]string) string {

@@ -21,7 +21,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/spaceship-alpha-9/hullcheck/internal/manifest"
+	"github.com/space-pirate-zero/hullcheck/internal/manifest"
 )
 
 // Verdict is the state of one artifact's provenance.

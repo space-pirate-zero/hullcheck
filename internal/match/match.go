@@ -12,7 +12,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/spaceship-alpha-9/hullcheck/internal/model"
+	"github.com/space-pirate-zero/hullcheck/internal/model"
 )
 
 // minToken is the shortest word allowed to carry a match. Short words are almost
