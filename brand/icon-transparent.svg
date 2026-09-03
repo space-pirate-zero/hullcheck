@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="hullcheck">
+<title>hullcheck</title>
+
+<polygon points="440.8,332.5 332.5,440.8 179.5,440.8 71.2,332.5 71.2,179.5 179.5,71.2 332.5,71.2 440.8,179.5" fill="#00F0FF"/>
+<polygon points="394.6,313.4 313.4,394.6 198.6,394.6 117.4,313.4 117.4,198.6 198.6,117.4 313.4,117.4 394.6,198.6" fill="#030303"/>
+<circle cx="377.6" cy="377.6" r="13.0" fill="#8A90A0"/><circle cx="134.4" cy="377.6" r="13.0" fill="#8A90A0"/><circle cx="134.4" cy="134.4" r="13.0" fill="#8A90A0"/><circle cx="377.6" cy="134.4" r="13.0" fill="#8A90A0"/>
+<rect x="106.0" y="245.0" width="300.0" height="22.0" fill="#E8E8E8"/>
+<rect x="278.0" y="245.0" width="52.0" height="22.0" fill="#030303"/>
+<rect x="278.0" y="250.5" width="52.0" height="11.0" fill="#FF1493"/>
+</svg>
