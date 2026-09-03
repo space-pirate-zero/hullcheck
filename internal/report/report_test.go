@@ -89,8 +89,15 @@ func TestJSONIsValidAndCarriesTheScore(t *testing.T) {
 	if err := json.Unmarshal(b.Bytes(), &got); err != nil {
 		t.Fatalf("emitted invalid JSON: %v", err)
 	}
-	if _, ok := got["gate_coverage"]; !ok {
-		t.Error("JSON must carry gate_coverage")
+	cov, ok := got["gate_coverage"]
+	if !ok {
+		t.Fatal("JSON must carry gate_coverage")
+	}
+	// Two rules hold of three, so 67 - a percentage, matching the human output
+	// and the Go API. Emitting a 0..1 fraction here once made the GitHub Action
+	// publish "coverage: 1" while labelling it a percentage.
+	if f, _ := cov.(float64); f < 66 || f > 67 {
+		t.Errorf("gate_coverage = %v, want a percentage near 67", cov)
 	}
 	if _, ok := got["time_to_truth"]; !ok {
 		t.Error("JSON must carry time_to_truth")

@@ -190,8 +190,40 @@ func split(kv string) (key, val string, ok bool) {
 	}
 	key = strings.TrimSpace(kv[:i])
 	val = strings.TrimSpace(kv[i+1:])
-	val = strings.TrimSuffix(strings.TrimPrefix(val, `"`), `"`)
+	// A double-quoted value may carry escapes. Fixture bodies are usually several
+	// lines of a deliberately broken file, and a parser that only accepts single
+	// lines makes the common case unexpressible.
+	if len(val) >= 2 && strings.HasPrefix(val, `"`) && strings.HasSuffix(val, `"`) {
+		return key, unescape(val[1 : len(val)-1]), true
+	}
 	return key, val, true
+}
+
+// unescape handles the small set of sequences a fixture body needs. Anything else
+// is left alone rather than guessed at.
+func unescape(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\\' || i+1 >= len(s) {
+			b.WriteByte(s[i])
+			continue
+		}
+		i++
+		switch s[i] {
+		case 'n':
+			b.WriteByte('\n')
+		case 't':
+			b.WriteByte('\t')
+		case '"':
+			b.WriteByte('"')
+		case '\\':
+			b.WriteByte('\\')
+		default:
+			b.WriteByte('\\')
+			b.WriteByte(s[i])
+		}
+	}
+	return b.String()
 }
 
 // Print emits a manifest derived from a reading. It goes to a writer, never to a

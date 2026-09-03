@@ -187,3 +187,66 @@ func git(root string, args ...string) (string, error) {
 	}
 	return out.String(), nil
 }
+
+// Since is when a rule first appeared, for rules nothing enforces. A gap that
+// opened last week is a different conversation from one that has been open since
+// 2019, and the difference is not visible in a coverage percentage.
+type Since struct {
+	RuleID string `json:"rule_id"`
+	Commit string `json:"commit"`
+	Date   string `json:"date"`
+	Tag    string `json:"tag,omitempty"`
+}
+
+// Ungoverned dates each breached rule by blaming the line it is stated on.
+func Ungoverned(root string, rep model.Report) []Since {
+	if !IsRepo(root) {
+		return nil
+	}
+	var out []Since
+	for _, f := range rep.Findings {
+		if f.Verdict != model.Breach || f.Rule.File == "" || f.Rule.Line == 0 {
+			continue
+		}
+		s, ok := blame(root, f.Rule.File, f.Rule.Line)
+		if !ok {
+			continue
+		}
+		s.RuleID = f.Rule.ID
+		out = append(out, s)
+	}
+	return out
+}
+
+func blame(root, file string, line int) (Since, bool) {
+	out, err := git(root, "blame", "-L", fmt.Sprintf("%d,%d", line, line),
+		"--porcelain", "--", file)
+	if err != nil {
+		return Since{}, false
+	}
+	var s Since
+	for i, l := range strings.Split(out, "\n") {
+		if i == 0 {
+			if f := strings.Fields(l); len(f) > 0 && len(f[0]) >= 8 {
+				s.Commit = f[0][:8]
+			}
+			continue
+		}
+		if strings.HasPrefix(l, "author-time ") {
+			var secs int64
+			if _, err := fmt.Sscanf(strings.TrimPrefix(l, "author-time "), "%d", &secs); err == nil {
+				s.Date = time.Unix(secs, 0).UTC().Format("2006-01-02")
+			}
+		}
+	}
+	if s.Commit == "" {
+		return Since{}, false
+	}
+	// A tag containing the commit turns a hash into something a human recognises.
+	if t, err := git(root, "describe", "--tags", "--contains", s.Commit); err == nil {
+		if t = strings.TrimSpace(strings.SplitN(t, "~", 2)[0]); t != "" {
+			s.Tag = strings.SplitN(t, "^", 2)[0]
+		}
+	}
+	return s, true
+}

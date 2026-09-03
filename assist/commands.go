@@ -108,3 +108,171 @@ func stripFence(s string) string {
 	}
 	return strings.TrimSuffix(strings.TrimSpace(s), "```")
 }
+
+const systemFixture = `You write the smallest possible file whose presence violates a
+rule, so a gate can be proven to fail on it.
+
+Output exactly two lines and nothing else:
+PATH: <a repo-relative path that would violate the rule>
+BODY: <one line of content, or - if an empty file is enough>
+
+No prose, no markdown fences, no explanation.`
+
+const systemExplain = `You are told a rule that nobody has managed to mechanise.
+Say in one sentence why it resists automation, then give a testable restatement of
+it that a shell command could check. Two short lines, no preamble:
+WHY: ...
+INSTEAD: ...`
+
+const systemTriage = `You rank unenforced rules by blast radius: how much damage a
+violation would do before anyone noticed. Reply with the rule ids only, worst
+first, one per line, and nothing else.`
+
+const systemHarvest = `You extract rules from prose. A rule is an obligation someone
+could violate and a machine could check. Ignore description, history and rationale.
+Output one rule per line, imperative and specific, and nothing else. If the text
+states no rules, output exactly: NONE`
+
+// Fixture drafts the violating file that turns a declared gate into a proven one.
+// Fixtures are the tedious half of verified mode, and without them --verify never
+// gets adopted.
+func Fixture(ctx context.Context, p Provider, rep hullcheck.Report, w io.Writer, limit int) error {
+	breaches := rep.Breaches()
+	if len(breaches) == 0 {
+		fmt.Fprintln(w, "# Nothing to draft: every stated rule already has a gate.")
+		return nil
+	}
+	if limit > 0 && len(breaches) > limit {
+		fmt.Fprintf(w, "# %d unenforced rules; drafting %d fixtures (--limit).\n", len(breaches), limit)
+		breaches = breaches[:limit]
+	}
+	fmt.Fprintf(w, "# Fixture stanzas drafted by hullcheck-assist using %s.\n"+
+		"# Paste into .hullcheck.yml under each rule's gate, then run --verify.\n\n", p.String())
+	for _, f := range breaches {
+		reply, err := p.Complete(ctx, systemFixture,
+			fmt.Sprintf("Rule id: %s\nRule: %s", f.RuleID, f.Statement))
+		if err != nil {
+			return fmt.Errorf("fixture for %s: %w", f.RuleID, err)
+		}
+		path, body := parseFixture(reply)
+		if path == "" {
+			fmt.Fprintf(w, "# %s: the model did not produce a usable fixture\n\n", f.RuleID)
+			continue
+		}
+		fmt.Fprintf(w, "  # %s - %s\n      fixture_path: %s\n", f.RuleID, f.Statement, path)
+		if body != "" && body != "-" {
+			fmt.Fprintf(w, "      fixture_body: %q\n", body)
+		}
+		fmt.Fprintln(w)
+	}
+	return nil
+}
+
+func parseFixture(reply string) (path, body string) {
+	for _, l := range strings.Split(stripFence(reply), "\n") {
+		l = strings.TrimSpace(l)
+		switch {
+		case strings.HasPrefix(l, "PATH:"):
+			path = strings.TrimSpace(strings.TrimPrefix(l, "PATH:"))
+		case strings.HasPrefix(l, "BODY:"):
+			body = strings.TrimSpace(strings.TrimPrefix(l, "BODY:"))
+		}
+	}
+	// A fixture that escapes the repository is refused here as well as in verify.
+	if strings.HasPrefix(path, "/") || strings.Contains(path, "..") {
+		return "", ""
+	}
+	return path, body
+}
+
+// Explain says why a rule resists mechanisation, and how to restate it so it does
+// not. A rule nobody can test is a rule nobody can follow.
+func Explain(ctx context.Context, p Provider, rep hullcheck.Report, w io.Writer, limit int) error {
+	breaches := rep.Breaches()
+	if len(breaches) == 0 {
+		fmt.Fprintln(w, "# Nothing to explain: every stated rule already has a gate.")
+		return nil
+	}
+	if limit > 0 && len(breaches) > limit {
+		breaches = breaches[:limit]
+	}
+	fmt.Fprintf(w, "# hullcheck-assist explain, using %s\n\n", p.String())
+	for _, f := range breaches {
+		reply, err := p.Complete(ctx, systemExplain, f.Statement)
+		if err != nil {
+			return fmt.Errorf("explaining %s: %w", f.RuleID, err)
+		}
+		fmt.Fprintf(w, "%s  %s\n%s\n\n", f.RuleID, f.Statement, indent(reply))
+	}
+	return nil
+}
+
+// Triage ranks unenforced rules by likely blast radius, turning a list of gaps
+// into an order of work.
+func Triage(ctx context.Context, p Provider, rep hullcheck.Report, w io.Writer) error {
+	breaches := rep.Breaches()
+	if len(breaches) == 0 {
+		fmt.Fprintln(w, "# Nothing to triage.")
+		return nil
+	}
+	var sb strings.Builder
+	for _, f := range breaches {
+		fmt.Fprintf(&sb, "%s (%s): %s\n", f.RuleID, f.Severity, f.Statement)
+	}
+	reply, err := p.Complete(ctx, systemTriage, sb.String())
+	if err != nil {
+		return err
+	}
+	byID := map[string]hullcheck.Finding{}
+	for _, f := range breaches {
+		byID[f.RuleID] = f
+	}
+	fmt.Fprintf(w, "# Fix in this order, worst blast radius first. Ranked by %s;\n"+
+		"# the severities beside each line are your repository's own.\n\n", p.String())
+	n := 0
+	for _, l := range strings.Split(reply, "\n") {
+		id := strings.TrimSpace(strings.TrimLeft(l, "-*0123456789. "))
+		if f, ok := byID[id]; ok {
+			n++
+			fmt.Fprintf(w, "  %d. %-18s %-7s %s\n", n, f.RuleID, f.Severity, f.Statement)
+			delete(byID, id)
+		}
+	}
+	for _, f := range breaches {
+		if _, still := byID[f.RuleID]; still {
+			n++
+			fmt.Fprintf(w, "  %d. %-18s %-7s %s   (unranked)\n", n, f.RuleID, f.Severity, f.Statement)
+		}
+	}
+	return nil
+}
+
+// Harvest reads prose the structural scanner could not, and proposes rules from it.
+// Structural discovery finds numbered clauses; half of real policy is in paragraphs.
+func Harvest(ctx context.Context, p Provider, text, source string, w io.Writer) error {
+	reply, err := p.Complete(ctx, systemHarvest, text)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(reply) == "NONE" {
+		fmt.Fprintf(w, "# %s: no rules found in this text.\n", source)
+		return nil
+	}
+	fmt.Fprintf(w, "# Candidate rules harvested from %s by %s.\n"+
+		"# These are proposals. Add the ones you actually mean to your policy document.\n\n",
+		source, p.String())
+	for _, l := range strings.Split(reply, "\n") {
+		if l = strings.TrimSpace(strings.TrimLeft(l, "-*0123456789. ")); l != "" {
+			fmt.Fprintf(w, "- %s\n", l)
+		}
+	}
+	return nil
+}
+
+func indent(s string) string {
+	var out []string
+	for _, l := range strings.Split(strings.TrimSpace(s), "\n") {
+		out = append(out, "  "+strings.TrimSpace(l))
+	}
+	return strings.Join(out, "\n")
+}

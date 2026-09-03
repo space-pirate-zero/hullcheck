@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"sort"
-	"strings"
 
 	"github.com/spaceship-alpha-9/hullcheck/internal/model"
 )
@@ -124,10 +123,14 @@ func Text(w io.Writer, r model.Report, verified bool) {
 	}
 
 	if loud := loudest(r, 3); len(loud) > 0 {
-		fmt.Fprintf(w, "\n  Your loudest silences%s\n", strings.Repeat(" ", 12))
+		fmt.Fprintf(w, "\n  Your loudest silences    %-8s %-13s %s\n", "severity", "ungoverned", "rule")
 		for _, f := range loud {
-			fmt.Fprintf(w, "    %-16s %-8s %s\n",
-				truncate(f.Rule.ID, 16), f.Rule.Severity, truncate(f.Rule.Statement, 46))
+			since := r.Since[f.Rule.ID]
+			if since == "" {
+				since = "-"
+			}
+			fmt.Fprintf(w, "    %-20s %-8s %-13s %s\n",
+				truncate(f.Rule.ID, 20), f.Rule.Severity, since, truncate(f.Rule.Statement, 40))
 		}
 	}
 
@@ -175,6 +178,9 @@ func plural(n int) string {
 
 // JSON writes the reading as data. Stable field order comes from the model.
 func JSON(w io.Writer, r model.Report, verified bool) error {
+	// Percentages, not fractions. The human output, the Go API and this all say
+	// "100" for full coverage; emitting 1.0 here made the GitHub Action publish a
+	// coverage of "1" while calling it a percentage.
 	type out struct {
 		model.Report
 		Verified         bool    `json:"verified"`
@@ -186,7 +192,7 @@ func JSON(w io.Writer, r model.Report, verified bool) error {
 	enc.SetIndent("", "  ")
 	return enc.Encode(out{
 		Report: r, Verified: verified,
-		Coverage: r.Coverage(), WeightedCoverage: r.WeightedCoverage(),
+		Coverage: r.Coverage() * 100, WeightedCoverage: r.WeightedCoverage() * 100,
 		TimeToTruth: Timing(r),
 	})
 }
@@ -209,4 +215,37 @@ func Markdown(w io.Writer, r model.Report) {
 			fmt.Fprintf(w, "- `%s` (%s) — %s\n", f.Rule.ID, f.Rule.Severity, f.Rule.Statement)
 		}
 	}
+}
+
+// Badge renders a self-contained SVG. No external image service, because a badge
+// that phones a third party on every README view is a tracking pixel.
+func Badge(w io.Writer, r model.Report) error {
+	pct := int(r.Coverage()*100 + 0.5)
+	// Colour is a judgement, so it is stated plainly: red below half, amber to
+	// four fifths, green above.
+	fill := "#e05d44"
+	switch {
+	case pct >= 80:
+		fill = "#4c1"
+	case pct >= 50:
+		fill = "#dfb317"
+	}
+	label, value := "gate coverage", fmt.Sprintf("%d%%", pct)
+	lw, vw := 6*len(label)+20, 7*len(value)+20
+	_, err := fmt.Fprintf(w, `<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="20" role="img" aria-label="%s: %s">
+<title>%s: %s</title>
+<linearGradient id="s" x2="0" y2="100%%"><stop offset="0" stop-color="#bbb" stop-opacity=".1"/><stop offset="1" stop-opacity=".1"/></linearGradient>
+<clipPath id="r"><rect width="%d" height="20" rx="3" fill="#fff"/></clipPath>
+<g clip-path="url(#r)">
+<rect width="%d" height="20" fill="#555"/>
+<rect x="%d" width="%d" height="20" fill="%s"/>
+<rect width="%d" height="20" fill="url(#s)"/>
+</g>
+<g fill="#fff" text-anchor="middle" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" font-size="11">
+<text x="%d" y="15" fill="#010101" fill-opacity=".3">%s</text><text x="%d" y="14">%s</text>
+<text x="%d" y="15" fill="#010101" fill-opacity=".3">%s</text><text x="%d" y="14">%s</text>
+</g></svg>
+`, lw+vw, label, value, label, value, lw+vw, lw, lw, vw, fill, lw+vw,
+		lw/2, label, lw/2, label, lw+vw/2, value, lw+vw/2, value)
+	return err
 }

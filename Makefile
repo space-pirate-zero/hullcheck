@@ -48,9 +48,15 @@ network:
 	@echo "net   ok (no network package in the core)"
 
 ## secrets: nothing credential-shaped in the tree (CONTRIBUTING 3.3)
+## Uses grep, not `git grep`. hullcheck --verify caught the git version as FAKE:
+## git grep only searches TRACKED files, and where there is no git repository it
+## errors, which the shell reads as "no match" - so the gate passed no matter what.
+## A gate that cannot fail is worse than no gate.
 secrets:
-	@if git grep -nEI '(BEGIN [A-Z ]*PRIVATE KEY|AKIA[0-9A-Z]{16}|sk-[A-Za-z0-9]{20,})' -- . ; then \
-		echo "possible secret committed"; exit 1; fi
+	@if grep -rEIl --exclude-dir=.git --exclude-dir=vendor --exclude-dir=node_modules \
+		--exclude=Makefile --exclude=.hullcheck.yml \
+		'(BEGIN [A-Z ]*PRIVATE KEY|AKIA[0-9A-Z]{16}|sk-[A-Za-z0-9]{20,})' . ; then \
+		echo "possible secret in the tree"; exit 1; fi
 	@echo "sec   ok"
 
 ## readonly: hullcheck must not write to the repo it reads (CONTRIBUTING 1.6)

@@ -162,6 +162,10 @@ type Report struct {
 	// Unlogged are gates that run but enforce nothing anyone wrote down.
 	Unlogged []Gate   `json:"unlogged"`
 	Docs     []string `json:"policy_documents"`
+	// Since dates each breached rule by the commit that introduced it. A gap
+	// opened last week is a different conversation from one open since 2019,
+	// and a coverage percentage cannot tell them apart.
+	Since map[string]string `json:"ungoverned_since,omitempty"`
 }
 
 // Counts summarises verdicts.

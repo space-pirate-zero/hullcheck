@@ -1,0 +1,49 @@
+# hullcheck's own manifest. Every gate here is proven, not merely declared:
+# `hullcheck --verify` breaks each rule in a scratch copy and checks the gate
+# actually fails. A rule with no fixture is reported declared-but-not-proven,
+# which is the honest state rather than something to paper over.
+version: 1
+rules:
+  - id: CONTRIBUTING-1.3
+    source: CONTRIBUTING.md
+    statement: "Every source file must be gofmt-clean before it is committed."
+    severity: high
+    gate:
+      kind: makefile
+      run: "make fmt"
+      proves: "exits non-zero when any file is not gofmt-clean"
+      fixture_path: internal/model/zz_fixture.go
+      fixture_body: "package model\n\nfunc   Ugly( )   {}\n"
+
+  - id: CONTRIBUTING-1.5
+    source: CONTRIBUTING.md
+    statement: "Code must never ship with a go vet finding."
+    severity: high
+    gate:
+      kind: makefile
+      run: "make vet"
+      proves: "exits non-zero on any vet finding"
+      fixture_path: internal/model/zz_fixture.go
+      fixture_body: "package model\n\nimport \\"fmt\\"\n\nfunc VetFail() { fmt.Printf(\\"%d\\", \\"nope\\") }\n"
+
+  - id: CONTRIBUTING-1.4
+    source: CONTRIBUTING.md
+    statement: "All tests must pass, with the race detector enabled."
+    severity: high
+    gate:
+      kind: makefile
+      run: "make test"
+      proves: "exits non-zero when any test fails"
+      fixture_path: internal/model/zz_fixture_test.go
+      fixture_body: "package model\n\nimport \\"testing\\"\n\nfunc TestFixtureFailure(t *testing.T) { t.Fatal(\\"fixture\\") }\n"
+
+  - id: CONTRIBUTING-3.3
+    source: CONTRIBUTING.md
+    statement: "Secrets must never enter git."
+    severity: high
+    gate:
+      kind: makefile
+      run: "make secrets"
+      proves: "exits non-zero when a credential-shaped string is present"
+      fixture_path: zz_leaked.pem
+      fixture_body: "-----BEGIN RSA PRIVATE KEY-----\n"

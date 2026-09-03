@@ -97,6 +97,21 @@ func TestPrintRoundTrips(t *testing.T) {
 	}
 }
 
+func TestFixtureBodyCarriesEscapes(t *testing.T) {
+	// Fixture bodies are usually several lines of a deliberately broken file.
+	f, err := Parse(strings.NewReader(
+		"version: 1\nrules:\n  - id: R\n    gate:\n      run: x\n" +
+			"      fixture_body: \"package p\\nfunc  Bad( ) {}\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := f.Rules[0].Gate.FixtureBody
+	want := "package p\nfunc  Bad( ) {}"
+	if got != want {
+		t.Fatalf("body = %q, want %q", got, want)
+	}
+}
+
 func TestMissingFileIsNotAnError(t *testing.T) {
 	f, found, err := Load(t.TempDir() + "/nope.yml")
 	if err != nil || found || f != nil {

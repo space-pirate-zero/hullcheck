@@ -21,6 +21,7 @@ import (
 
 	"github.com/spaceship-alpha-9/hullcheck/internal/banner"
 	"github.com/spaceship-alpha-9/hullcheck/internal/history"
+	"github.com/spaceship-alpha-9/hullcheck/internal/insight"
 	"github.com/spaceship-alpha-9/hullcheck/internal/manifest"
 	"github.com/spaceship-alpha-9/hullcheck/internal/report"
 	"github.com/spaceship-alpha-9/hullcheck/internal/scan"
@@ -46,6 +47,9 @@ flags:
   --print-manifest  print a .hullcheck.yml derived from this reading, to stdout
   --verify          prove each declared gate fails when its rule is broken
   --since REF       show how coverage moved from REF to now (repeatable trend)
+  --paths           which top-level trees have gates, and which have none
+  --owners          gates with one owner or none, from CODEOWNERS
+  --badge           write a self-contained SVG coverage badge to stdout
   --base REF        diff mode: treat REF as the baseline (default origin/HEAD)
   --fail-under N    exit 1 if gate coverage is below N percent
   --weighted        judge --fail-under against severity-weighted coverage
@@ -83,6 +87,9 @@ func execute(args []string, stdout, stderr io.Writer) int {
 		printMan  = fs.Bool("print-manifest", false, "print a manifest to stdout")
 		doVerify  = fs.Bool("verify", false, "prove declared gates actually fail")
 		since     = fs.String("since", "", "show how coverage moved from this ref")
+		showPaths = fs.Bool("paths", false, "gate density per top-level tree")
+		showOwn   = fs.Bool("owners", false, "gates with one owner or none")
+		badge     = fs.Bool("badge", false, "write an SVG coverage badge to stdout")
 	)
 	fs.Usage = func() { fmt.Fprint(stderr, usage) }
 	if err := fs.Parse(args); err != nil {
@@ -118,6 +125,67 @@ func execute(args []string, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprintf(os.Stderr, "hullcheck: %v\n", err)
 		return 2
+	}
+
+	// Date the gaps when we are in a git repository. Best effort: no history is
+	// a missing column, not a failed run.
+	if u := history.Ungoverned(root, rep); len(u) > 0 {
+		rep.Since = make(map[string]string, len(u))
+		for _, s := range u {
+			label := s.Date
+			if s.Tag != "" {
+				label = s.Tag
+			}
+			rep.Since[s.RuleID] = label
+		}
+	}
+
+	if *badge {
+		if err := report.Badge(stdout, rep); err != nil {
+			fmt.Fprintf(stderr, "hullcheck: %v\n", err)
+			return 2
+		}
+		return 0
+	}
+
+	if *showPaths {
+		trees := insight.PathCoverage(root, rep)
+		if len(trees) == 0 {
+			fmt.Fprintln(stdout, "no top-level trees large enough to judge")
+			return 0
+		}
+		fmt.Fprintf(stdout, "HULLCHECK gate density\n\n  %-28s %6s %7s\n", "tree", "gates", "files")
+		for _, t := range trees {
+			mark := " "
+			if t.Gates == 0 {
+				mark = "!"
+			}
+			fmt.Fprintf(stdout, "%s %-28s %6d %7d\n", mark, t.Path, t.Gates, t.Files)
+		}
+		fmt.Fprintln(stdout, "\n  ! marks a tree with no gate of its own.")
+		return 0
+	}
+
+	if *showOwn {
+		owners := insight.BusFactor(root, rep)
+		if owners == nil {
+			fmt.Fprintln(stderr, "hullcheck: no CODEOWNERS file, so there is no ownership signal to read")
+			return 2
+		}
+		if len(owners) == 0 {
+			fmt.Fprintln(stdout, "every gate has more than one owner")
+			return 0
+		}
+		fmt.Fprintf(stdout, "HULLCHECK gate ownership\n\n")
+		for _, o := range owners {
+			who := "unowned"
+			if len(o.Owners) == 1 {
+				who = o.Owners[0]
+			}
+			fmt.Fprintf(stdout, "  %-12s %-34s %s\n", who, o.File, o.Gate)
+		}
+		fmt.Fprintln(stdout, "\n  A gate with one owner is a gate that stops being fixed when they leave.")
+		return 0
 	}
 
 	if *printMan {

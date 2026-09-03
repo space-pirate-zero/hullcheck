@@ -10,7 +10,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -26,8 +25,12 @@ var version = "dev"
 const usage = `hullcheck-assist - draft the gates you are missing
 
 usage:
-  hullcheck-assist plan [flags] [path]    draft a gate for every unenforced rule
-  hullcheck-assist name [flags] [path]    name the rules your unlogged gates enforce
+  hullcheck-assist plan    [flags] [path]   draft a gate for every unenforced rule
+  hullcheck-assist fixture [flags] [path]   draft the violating fixture each gate needs
+  hullcheck-assist name    [flags] [path]   name the rules your unlogged gates enforce
+  hullcheck-assist explain [flags] [path]   why a rule resists mechanising, and a restatement
+  hullcheck-assist triage  [flags] [path]   order the gaps by blast radius
+  hullcheck-assist harvest [flags] FILE     propose rules from prose the scanner missed
 
 flags:
   --model NAME     use this model
@@ -58,7 +61,9 @@ func execute(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	cmd := args[0]
-	if cmd != "plan" && cmd != "name" {
+	switch cmd {
+	case "plan", "fixture", "name", "explain", "triage", "harvest":
+	default:
 		fmt.Fprint(stderr, usage)
 		return 2
 	}
@@ -76,10 +81,28 @@ func execute(args []string, stdout, stderr io.Writer) int {
 		root = fs.Arg(0)
 	}
 
-	rep, err := hullcheck.Read(root)
-	if err != nil {
-		fmt.Fprintf(stderr, "hullcheck-assist: %v\n", err)
-		return 2
+	// harvest reads a file, not a repository, so it does not need a reading.
+	var rep hullcheck.Report
+	var harvestText, harvestSrc string
+	if cmd == "harvest" {
+		if fs.NArg() == 0 {
+			fmt.Fprintln(stderr, "hullcheck-assist: harvest needs a file to read")
+			return 2
+		}
+		harvestSrc = fs.Arg(0)
+		b, rerr := os.ReadFile(harvestSrc) //nolint:gosec // the user named this file
+		if rerr != nil {
+			fmt.Fprintf(stderr, "hullcheck-assist: %v\n", rerr)
+			return 2
+		}
+		harvestText = string(b)
+	} else {
+		var rerr error
+		rep, rerr = hullcheck.Read(root)
+		if rerr != nil {
+			fmt.Fprintf(stderr, "hullcheck-assist: %v\n", rerr)
+			return 2
+		}
 	}
 
 	ctx := context.Background()
@@ -95,20 +118,26 @@ func execute(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stderr, "  using %s\n\n", d.Provider)
 
+	var err2 error
 	switch cmd {
 	case "plan":
-		err = assist.Plan(ctx, *d.Provider, rep, stdout, *limit)
+		err2 = assist.Plan(ctx, *d.Provider, rep, stdout, *limit)
+	case "fixture":
+		err2 = assist.Fixture(ctx, *d.Provider, rep, stdout, *limit)
+	case "explain":
+		err2 = assist.Explain(ctx, *d.Provider, rep, stdout, *limit)
+	case "triage":
+		err2 = assist.Triage(ctx, *d.Provider, rep, stdout)
+	case "harvest":
+		err2 = assist.Harvest(ctx, *d.Provider, harvestText, harvestSrc, stdout)
 	case "name":
-		err = assist.Name(ctx, *d.Provider, rep, func(rel string) (string, error) {
+		err2 = assist.Name(ctx, *d.Provider, rep, func(rel string) (string, error) {
 			b, rerr := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel))) //nolint:gosec
 			return string(b), rerr
 		}, stdout)
 	}
-	if err != nil {
-		fmt.Fprintf(stderr, "hullcheck-assist: %v\n", err)
-		if errors.Is(err, assist.ErrNoModel) {
-			return 2
-		}
+	if err2 != nil {
+		fmt.Fprintf(stderr, "hullcheck-assist: %v\n", err2)
 		return 2
 	}
 	return 0

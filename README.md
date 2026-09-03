@@ -190,6 +190,24 @@ repository it reads, asserted by `make readonly`.
 It refuses rather than flatters. Point it at a repository that states no rules and it
 reports `UNKNOWN` and exits 2. A reading with no denominator is a lie.
 
+## Reading the shape of the gaps
+
+```sh
+hullcheck --paths      # which top-level trees have gates, and which have none
+hullcheck --owners     # gates with one owner or none, from CODEOWNERS
+hullcheck --badge      # a self-contained SVG, no third-party image service
+```
+
+`--paths` is the one that surprises people: a repository can score well overall
+while an entire subsystem has no gate of its own. Breached rules are also dated
+by the commit that introduced them, so a gap opened last week reads differently
+from one open since 2019.
+
+Two features from the original design were **deliberately not built**: a "refusal
+audit" and a "provenance audit". Neither can be done generically without a pile of
+heuristics that produce confident-looking false findings, and this tool's whole
+argument is that a wrong number is worse than no number.
+
 ## Watching the trend, and gating pull requests
 
 A snapshot starts an argument; a trend ends one.
@@ -212,8 +230,12 @@ would be the obvious approach and is disqualified: it writes into `.git`.
 drafts to review.
 
 ```sh
-hullcheck-assist plan .     # draft a gate for every BREACH
-hullcheck-assist name .     # name the rules your UNLOGGED gates already enforce
+hullcheck-assist plan .        # draft a gate for every BREACH
+hullcheck-assist fixture .     # draft the violating fixture each gate needs to be proven
+hullcheck-assist name .        # name the rules your UNLOGGED gates already enforce
+hullcheck-assist explain .     # why a rule resists mechanising, and a restatement
+hullcheck-assist triage .      # order the gaps by blast radius
+hullcheck-assist harvest doc.md  # propose rules from prose the scanner missed
 ```
 
 It is a **separate binary**, which is what keeps "no network package in the core's
@@ -249,8 +271,15 @@ quote a number it did not earn.
 Verified mode **is** built: `--print-manifest`, `--verify`, the control run, and the
 `FAKE` and `BROKEN` verdicts.
 
-Everything in the plan is built: the reading, verified mode with the control run,
-Time-to-Truth, drift, PR mode, and the assist layer.
+Built: the reading, verified mode with the control run, Time-to-Truth, drift, PR
+mode, path coverage, gate bus-factor, ungoverned-since, the badge, and all six
+assist commands.
+
+**hullcheck verifies its own repository**: four gates declared with fixtures, all
+four proven by breaking the rule and watching the gate fail. The first verified
+run found one of them FAKE - `make secrets` used `git grep`, which only searches
+tracked files and silently passes where there is no git repository. That gate is
+fixed, and the finding is why the control run exists.
 
 Honest limits: `--verify` proves gates you have declared *and given a fixture*; a
 gate without one is reported as declared-but-not-proven rather than counted as

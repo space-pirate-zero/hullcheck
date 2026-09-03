@@ -148,3 +148,49 @@ func TestNameProposesRulesForUnloggedGates(t *testing.T) {
 		t.Errorf("got:\n%s", b.String())
 	}
 }
+
+func TestFixtureRefusesAPathThatEscapesTheRepo(t *testing.T) {
+	var b strings.Builder
+	err := assist.Fixture(context.Background(),
+		stub(t, "PATH: ../../etc/passwd\nBODY: x"), readingWithBreach(t), &b, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(b.String(), "etc/passwd") {
+		t.Errorf("an escaping fixture path must be refused here as well as in verify:\n%s", b.String())
+	}
+	if !strings.Contains(b.String(), "did not produce a usable fixture") {
+		t.Errorf("the refusal must be visible:\n%s", b.String())
+	}
+}
+
+func TestTriageKeepsEveryRuleEvenWhenTheModelDropsOne(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "RULES.md", "1.1 Secrets must never enter git.\n1.2 Tenants must never share data.\n")
+	rep, err := hullcheck.Read(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var b strings.Builder
+	// The model ranks only one of the two.
+	if err := assist.Triage(context.Background(), stub(t, "RULES-1.2"), rep, &b); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+	if !strings.Contains(out, "RULES-1.1") || !strings.Contains(out, "RULES-1.2") {
+		t.Errorf("triage silently dropped a rule:\n%s", out)
+	}
+	if !strings.Contains(out, "unranked") {
+		t.Error("a rule the model ignored must be shown as unranked, not omitted")
+	}
+}
+
+func TestHarvestReportsNoneHonestly(t *testing.T) {
+	var b strings.Builder
+	if err := assist.Harvest(context.Background(), stub(t, "NONE"), "some prose", "notes.md", &b); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(b.String(), "no rules found") {
+		t.Errorf("got:\n%s", b.String())
+	}
+}
