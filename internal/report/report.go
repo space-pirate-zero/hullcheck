@@ -101,6 +101,9 @@ func Text(w io.Writer, r model.Report, verified bool) {
 	if c[model.Fake] > 0 {
 		fmt.Fprintf(w, "  FAKE      %4d   the gate passes even when its rule is broken\n", c[model.Fake])
 	}
+	if c[model.Broken] > 0 {
+		fmt.Fprintf(w, "  BROKEN    %4d   the gate fails either way; it proves nothing\n", c[model.Broken])
+	}
 	fmt.Fprintf(w, "  UNLOGGED  %4d   a gate runs, enforcing nothing anyone wrote down\n\n",
 		len(r.Unlogged))
 

@@ -16,9 +16,13 @@ import (
 	"os"
 	"strconv"
 
+	"path/filepath"
+
 	"github.com/spaceship-alpha-9/hullcheck/internal/banner"
+	"github.com/spaceship-alpha-9/hullcheck/internal/manifest"
 	"github.com/spaceship-alpha-9/hullcheck/internal/report"
 	"github.com/spaceship-alpha-9/hullcheck/internal/scan"
+	"github.com/spaceship-alpha-9/hullcheck/internal/verify"
 )
 
 // version is stamped at build time: -ldflags "-X main.version=v0.1.0".
@@ -36,6 +40,8 @@ usage:
 flags:
   --json            emit the reading as JSON
   --markdown        emit a PR-comment summary
+  --print-manifest  print a .hullcheck.yml derived from this reading, to stdout
+  --verify          prove each declared gate fails when its rule is broken
   --fail-under N    exit 1 if gate coverage is below N percent
   --weighted        judge --fail-under against severity-weighted coverage
   --no-banner       suppress the wordmark
@@ -66,6 +72,8 @@ func execute(args []string, stdout, stderr io.Writer) int {
 		weighted  = fs.Bool("weighted", false, "judge --fail-under against weighted coverage")
 		noBanner  = fs.Bool("no-banner", false, "suppress the wordmark")
 		showVer   = fs.Bool("version", false, "print version and exit")
+		printMan  = fs.Bool("print-manifest", false, "print a manifest to stdout")
+		doVerify  = fs.Bool("verify", false, "prove declared gates actually fail")
 	)
 	fs.Usage = func() { fmt.Fprint(stderr, usage) }
 	if err := fs.Parse(args); err != nil {
@@ -99,16 +107,47 @@ func execute(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
+	if *printMan {
+		if err := manifest.Print(stdout, rep); err != nil {
+			fmt.Fprintf(stderr, "hullcheck: %v\n", err)
+			return 2
+		}
+		return 0
+	}
+
+	verified := false
+	if *doVerify {
+		m, found, err := manifest.Load(filepath.Join(root, manifest.Name))
+		if err != nil {
+			fmt.Fprintf(stderr, "hullcheck: %s: %v\n", manifest.Name, err)
+			return 2
+		}
+		if !found {
+			fmt.Fprintf(stderr,
+				"hullcheck: --verify needs %s, and this repository has none.\n\n"+
+					"  Create one from the current reading, review it, then verify:\n"+
+					"    hullcheck --print-manifest . > %s\n", manifest.Name, manifest.Name)
+			return 2
+		}
+		res, err := verify.Run(m, verify.Options{Root: root, Log: stderr})
+		if err != nil {
+			fmt.Fprintf(stderr, "hullcheck: verify: %v\n", err)
+			return 2
+		}
+		rep = verify.Apply(rep, res)
+		verified = true
+	}
+
 	switch {
 	case *asJSON:
-		if err := report.JSON(stdout, rep, false); err != nil {
+		if err := report.JSON(stdout, rep, verified); err != nil {
 			fmt.Fprintf(stderr, "hullcheck: %v\n", err)
 			return 2
 		}
 	case *asMD:
 		report.Markdown(stdout, rep)
 	default:
-		report.Text(stdout, rep, false)
+		report.Text(stdout, rep, verified)
 	}
 
 	if *failUnder >= 0 {

@@ -61,6 +61,11 @@ JSON output.
 
 *Gate: make test*
 
+3.4 A gate must never be reported as proven without a control run. A command that
+cannot run exits non-zero and would otherwise read as a gate that works.
+
+*Gate: make test*
+
 3.3 Secrets must never enter git. hullcheck reads repositories; it has no business
 holding credentials.
 

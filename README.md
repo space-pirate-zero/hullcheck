@@ -67,6 +67,7 @@ is not affordable now. A rule that cannot execute is a wish.
 | **BREACH** | stated, nothing runs on it |
 | **UNLOGGED** | a gate runs, enforcing nothing anyone wrote down |
 | **FAKE** | the gate passes even when its rule is broken — a patch that is only paint |
+| **BROKEN** | the gate fails either way, so it proves nothing — usually a command that cannot run |
 
 **UNLOGGED** is the bucket nobody else reports: CI enforcing rules no one wrote down,
 institutional knowledge that exists only as a red build.
@@ -78,12 +79,87 @@ language your leadership already prices. A rule gated only by a nightly job is
 covered, and fourteen hours late. The same rule at pre-commit is caught in seconds.
 Identical coverage, wildly different exposure.
 
-## Install and run
+## Add it to CI in one line
+
+**GitHub Actions.** No Go toolchain, no install step, no version for you to maintain:
+
+```yaml
+- uses: spaceship-alpha-9/hullcheck@v1
+```
+
+Report first, fail later — start by seeing the number, then ratchet:
+
+```yaml
+- uses: spaceship-alpha-9/hullcheck@v1
+  with:
+    fail-under: 60      # omit entirely to report without failing
+```
+
+It exposes `coverage` and `breaches` as step outputs, so you can post them, chart
+them, or gate on them yourself.
+
+**Your Go test suite.** One function, no new tooling, runs with `go test`:
+
+```go
+func TestGateCoverage(t *testing.T) {
+    hullcheck.AssertCoverage(t, ".", 80)
+}
+```
+
+Or ratchet instead of gating, so a repository can carry known gaps without letting
+new ones in:
+
+```go
+func TestNoNewBreaches(t *testing.T) {
+    hullcheck.AssertNoNewBreaches(t, ".", "RULES-7.4", "RULES-8.1")
+}
+```
+
+A failure names the rules, not just the percentage — a number tells you that you
+failed, not what to fix.
+
+**pre-commit.** Catch it in seconds instead of minutes:
+
+```yaml
+repos:
+  - repo: https://github.com/spaceship-alpha-9/hullcheck
+    rev: v0.1.0
+    hooks:
+      - id: hullcheck-fail-under
+```
+
+**Any other CI, or no CI at all.** One command, nothing installed, repo mounted
+read-only:
+
+```sh
+docker run --rm -v "$PWD:/repo:ro" ghcr.io/spaceship-alpha-9/hullcheck
+```
+
+**Locally.**
 
 ```sh
 go install github.com/spaceship-alpha-9/hullcheck/cmd/hullcheck@latest
 hullcheck .
 ```
+
+## Turning the reading into a score
+
+The default run is a *reading*: it matched rules to gates by name and reference. To
+get a number you can quote, declare the links and prove them:
+
+```sh
+hullcheck --print-manifest . > .hullcheck.yml   # review it, add fixtures
+hullcheck --verify .
+```
+
+`--verify` breaks each rule inside a scratch copy of your repository and checks that
+the gate actually fails. It runs a **control first** — the gate on an unmodified copy
+— because without one, a gate that cannot run at all exits non-zero and is
+indistinguishable from a gate that works. That control is the difference between an
+experiment and a hopeful guess, and it is what makes `FAKE` and `BROKEN` trustworthy.
+
+Your repository is never modified: fixtures are applied to a temp copy that is
+removed afterwards.
 
 ## What it leaves behind
 
@@ -122,8 +198,11 @@ its rule is broken — that is verified mode (`--verify` and the `FAKE` verdict)
 is not built yet. The tool says so on every unverified run rather than letting you
 quote a number it did not earn.
 
-Not built yet: verified mode, drift across git history, PR mode, and the separate
-`hullcheck-assist` binary that drafts the gates you are missing.
+Verified mode **is** built: `--print-manifest`, `--verify`, the control run, and the
+`FAKE` and `BROKEN` verdicts.
+
+Not built yet: drift across git history (`--since`), PR mode (`hullcheck diff`), and
+the separate `hullcheck-assist` binary that drafts the gates you are missing.
 
 ## Prior art, credited
 

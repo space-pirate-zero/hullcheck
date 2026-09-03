@@ -1,0 +1,75 @@
+name: hullcheck
+description: >-
+  Report which of your stated engineering rules are actually enforced by
+  something that runs, and how long a violation survives before it is caught.
+author: Spaceship Alpha 9
+branding:
+  icon: shield
+  color: purple
+
+inputs:
+  path:
+    description: Directory to read.
+    required: false
+    default: "."
+  fail-under:
+    description: >-
+      Fail the job if gate coverage is below this percentage. Omit to report
+      without failing - the usual way to start.
+    required: false
+    default: ""
+  weighted:
+    description: Judge fail-under against severity-weighted coverage.
+    required: false
+    default: "false"
+  verify:
+    description: >-
+      Prove each declared gate fails when its rule is broken. Requires a
+      .hullcheck.yml. Runs the gate commands your manifest declares.
+    required: false
+    default: "false"
+  format:
+    description: "Output format: text, json, or markdown."
+    required: false
+    default: "text"
+
+outputs:
+  coverage:
+    description: Gate coverage as a percentage.
+    value: ${{ steps.run.outputs.coverage }}
+  breaches:
+    description: Number of stated rules that nothing enforces.
+    value: ${{ steps.run.outputs.breaches }}
+
+# A container action so the only prerequisite is the runner itself: no Go
+# toolchain, no install step, no version pinning for the caller to maintain.
+runs:
+  using: composite
+  steps:
+    - id: run
+      shell: bash
+      env:
+        HC_PATH: ${{ inputs.path }}
+        HC_FAIL_UNDER: ${{ inputs.fail-under }}
+        HC_WEIGHTED: ${{ inputs.weighted }}
+        HC_VERIFY: ${{ inputs.verify }}
+        HC_FORMAT: ${{ inputs.format }}
+      run: |
+        set -euo pipefail
+        docker build -q -t hullcheck-action "${{ github.action_path }}" >/dev/null
+        args=(--no-banner)
+        [ "$HC_FORMAT" = "json" ] && args+=(--json)
+        [ "$HC_FORMAT" = "markdown" ] && args+=(--markdown)
+        [ "$HC_VERIFY" = "true" ] && args+=(--verify)
+        [ "$HC_WEIGHTED" = "true" ] && args+=(--weighted)
+        [ -n "$HC_FAIL_UNDER" ] && args+=(--fail-under "$HC_FAIL_UNDER")
+
+        # Read the numbers first without a threshold, so the outputs are always
+        # populated even when the run below fails the job.
+        json=$(docker run --rm -v "$PWD:/repo:ro" hullcheck-action --no-banner --json "/repo/$HC_PATH" || true)
+        cov=$(printf '%s' "$json" | grep -o '"gate_coverage": *[0-9.]*' | head -1 | tr -cd '0-9.') || true
+        br=$(printf '%s' "$json" | grep -c '"verdict": *"BREACH"' || true)
+        echo "coverage=${cov:-0}" >> "$GITHUB_OUTPUT"
+        echo "breaches=${br:-0}" >> "$GITHUB_OUTPUT"
+
+        docker run --rm -v "$PWD:/repo:ro" hullcheck-action "${args[@]}" "/repo/$HC_PATH"

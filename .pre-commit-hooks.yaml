@@ -1,0 +1,24 @@
+# Add to .pre-commit-config.yaml:
+#
+#   repos:
+#     - repo: https://github.com/spaceship-alpha-9/hullcheck
+#       rev: v0.1.0
+#       hooks:
+#         - id: hullcheck
+#
+# Gating at pre-commit puts your own Time-to-Truth in seconds rather than minutes.
+- id: hullcheck
+  name: hullcheck (gate coverage)
+  description: Report which stated rules are actually enforced.
+  entry: hullcheck --no-banner
+  language: golang
+  pass_filenames: false
+  always_run: true
+
+- id: hullcheck-fail-under
+  name: hullcheck (fail under 80%)
+  description: Fail the commit if gate coverage drops below 80 percent.
+  entry: hullcheck --no-banner --fail-under 80
+  language: golang
+  pass_filenames: false
+  always_run: true

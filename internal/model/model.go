@@ -14,6 +14,11 @@ const (
 	// that is only paint. Worse than a breach, because it manufactures
 	// confidence. Only reachable in verified mode.
 	Fake Verdict = "FAKE"
+	// Broken: the gate fails whether or not the rule is broken, so it
+	// discriminates nothing. Usually a command that cannot run at all - and
+	// without a control run it is indistinguishable from a gate that works.
+	// An always-red gate gets disabled by the third person who hits it.
+	Broken Verdict = "BROKEN"
 )
 
 // Severity is how expensive a violation is, as declared by the repo.
@@ -161,7 +166,7 @@ type Report struct {
 
 // Counts summarises verdicts.
 func (r Report) Counts() map[Verdict]int {
-	c := map[Verdict]int{Hold: 0, Breach: 0, Fake: 0}
+	c := map[Verdict]int{Hold: 0, Breach: 0, Fake: 0, Broken: 0}
 	for _, f := range r.Findings {
 		c[f.Verdict]++
 	}
