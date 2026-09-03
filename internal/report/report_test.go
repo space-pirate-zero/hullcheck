@@ -42,8 +42,21 @@ func TestManualGatesAreNotAutomaticDetection(t *testing.T) {
 		Rule: model.Rule{ID: "R-1"}, Verdict: model.Hold,
 		Gates: []model.Gate{{Name: "x", Stage: model.Manual}},
 	}}}
-	if tt := Timing(r); tt.Never != 1 {
+	tt := Timing(r)
+	if tt.NoAutoDetection() != 1 {
 		t.Fatalf("a manual gate must count as 'never' for detection latency, got %+v", tt)
+	}
+	// ...but it is counted once, on its own stage row - not a second time as an
+	// ungoverned rule. The ladder has to sum to the rule count.
+	if tt.Never != 0 || tt.ManualOnly != 1 || tt.ByStage[model.Manual] != 1 {
+		t.Fatalf("manual gate double-counted: %+v", tt)
+	}
+	rows := tt.Never
+	for _, n := range tt.ByStage {
+		rows += n
+	}
+	if rows != len(r.Findings) {
+		t.Fatalf("ladder rows = %d, want %d (one row per rule)", rows, len(r.Findings))
 	}
 }
 

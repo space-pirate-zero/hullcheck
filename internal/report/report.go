@@ -21,9 +21,20 @@ var stages = []model.Stage{
 // TTT summarises how long a violation survives before something catches it.
 type TTT struct {
 	ByStage map[model.Stage]int `json:"by_stage"`
-	Never   int                 `json:"never"`
-	P50     int                 `json:"p50_seconds"`
-	P90     int                 `json:"p90_seconds"`
+	// Never counts rules with no gate at all. It deliberately does NOT include
+	// rules gated only at a manual stage: those are already counted in ByStage,
+	// where the row prints its latency as "never" anyway. Adding them here too
+	// made the ladder rows sum to more than the rule count and told the reader
+	// that gated rules were ungoverned.
+	Never int `json:"never"`
+	// ManualOnly counts rules whose only gate is a manual stage. Together with
+	// Never it is the set of rules nothing detects automatically.
+	ManualOnly int `json:"manual_only"`
+	P50        int `json:"p50_seconds"`
+	P90        int `json:"p90_seconds"`
+	// Worst is the slowest observed latency, not p90. The two differ whenever
+	// latencies straddle stages, and the tail is the number a reader wants.
+	Worst int `json:"worst_seconds"`
 	// WorstNever is true when at least one rule has no automatic detection at all.
 	WorstNever bool `json:"worst_is_never"`
 }
@@ -44,15 +55,23 @@ func Timing(r model.Report) TTT {
 			lat = append(lat, l)
 		} else {
 			// A gate nothing schedules is not an automatic detection.
-			t.Never++
+			t.ManualOnly++
 			t.WorstNever = true
 		}
 	}
 	sort.Ints(lat)
 	t.P50 = pct(lat, 0.50)
 	t.P90 = pct(lat, 0.90)
+	t.Worst = -1
+	if len(lat) > 0 {
+		t.Worst = lat[len(lat)-1]
+	}
 	return t
 }
+
+// NoAutoDetection is the number of rules nothing catches without a human
+// remembering to look: ungoverned rules plus manually-gated ones.
+func (t TTT) NoAutoDetection() int { return t.Never + t.ManualOnly }
 
 func pct(sorted []int, p float64) int {
 	if len(sorted) == 0 {
@@ -109,7 +128,7 @@ func Text(w io.Writer, r model.Report, verified bool) {
 	t := Timing(r)
 	worst := "never"
 	if !t.WorstNever {
-		worst = Duration(t.P90)
+		worst = Duration(t.Worst)
 	}
 	fmt.Fprintf(w, "  TIME-TO-TRUTH        p50 %-6s p90 %-6s worst %s\n",
 		Duration(t.P50), Duration(t.P90), worst)

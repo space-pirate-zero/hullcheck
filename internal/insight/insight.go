@@ -18,11 +18,18 @@ import (
 	"github.com/space-pirate-zero/hullcheck/internal/model"
 )
 
+// RootPath labels gates that live at the repository root. A Makefile target or a
+// root checker is not scoped to one tree - it usually covers all of them - so
+// attributing it to nothing made every directory look ungoverned.
+const RootPath = "(repository root)"
+
 // Tree is the gate density of one top-level directory.
 type Tree struct {
 	Path  string `json:"path"`
 	Gates int    `json:"gates"`
 	Files int    `json:"files"`
+	// Root marks the synthetic entry for gates sitting at the repository root.
+	Root bool `json:"root,omitempty"`
 }
 
 // PathCoverage reports which top-level trees have gates and which have none.
@@ -30,9 +37,11 @@ type Tree struct {
 func PathCoverage(root string, rep model.Report) []Tree {
 	gates := map[string]int{}
 	count := func(file string) {
-		if t := topLevel(file); t != "" {
-			gates[t]++
+		t := topLevel(file)
+		if t == "" {
+			t = RootPath // a root-level gate, not an unattributable one
 		}
+		gates[t]++
 	}
 	for _, f := range rep.Findings {
 		for _, g := range f.Gates {
@@ -55,7 +64,10 @@ func PathCoverage(root string, rep model.Report) []Tree {
 		files[e.Name()] = countFiles(filepath.Join(root, e.Name()))
 	}
 
-	out := make([]Tree, 0, len(files))
+	out := make([]Tree, 0, len(files)+1)
+	if n := gates[RootPath]; n > 0 {
+		out = append(out, Tree{Path: RootPath, Gates: n, Root: true})
+	}
 	for dir, n := range files {
 		// Ignore trivial directories: a tree with three files does not need its
 		// own gate, and listing it as ungoverned is noise.
@@ -65,6 +77,10 @@ func PathCoverage(root string, rep model.Report) []Tree {
 		out = append(out, Tree{Path: dir, Gates: gates[dir], Files: n})
 	}
 	sort.Slice(out, func(i, j int) bool {
+		// The root entry is context for every other row, so it leads.
+		if out[i].Root != out[j].Root {
+			return out[i].Root
+		}
 		if out[i].Gates != out[j].Gates {
 			return out[i].Gates < out[j].Gates
 		}

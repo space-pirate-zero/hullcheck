@@ -13,19 +13,14 @@
 package verify
 
 import (
-	"context"
-	"errors"
 	"fmt"
 	"io"
-	"io/fs"
-	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/space-pirate-zero/hullcheck/internal/manifest"
 	"github.com/space-pirate-zero/hullcheck/internal/model"
+	"github.com/space-pirate-zero/hullcheck/internal/scratch"
 )
 
 // DefaultTimeout bounds a single gate run. A gate that hangs is a gate that fails.
@@ -83,138 +78,61 @@ func Run(m *manifest.File, opt Options) ([]Result, error) {
 }
 
 func proveOne(root string, r manifest.Rule, opt Options) (Result, error) {
-	scratch, err := os.MkdirTemp("", "hullcheck-verify-")
+	// The scratch copy, the timeout and the escape check all live in
+	// internal/scratch so the verifier and the refusal auditor cannot drift
+	// apart about what "never writes to your repository" means.
+	dir, err := scratch.Copy(root)
 	if err != nil {
 		return Result{}, err
 	}
-	defer func() { _ = os.RemoveAll(scratch) }()
-
-	if err := copyTree(root, scratch); err != nil {
-		return Result{}, err
-	}
+	defer dir.Close()
 
 	// CONTROL: run the gate on an unmodified copy first. Without this, a gate
 	// that cannot run at all exits non-zero and reads as one that works - exit
 	// 127 is indistinguishable from a caught violation. The control is what
 	// makes this an experiment rather than a hopeful guess.
-	clean, err := runGate(scratch, r.Gate.Run, opt.Timeout)
+	clean, err := dir.Run(r.Gate.Run, opt.Timeout)
 	if err != nil {
 		return Result{}, err
 	}
-	if clean != 0 {
+	if clean.TimedOut {
+		return Result{r.ID, model.Broken, fmt.Sprintf(
+			"the gate did not finish with the rule intact, so it decides nothing"+
+				" - check that %q terminates", r.Gate.Run)}, nil
+	}
+	if clean.Exit != 0 {
 		return Result{r.ID, model.Broken, fmt.Sprintf(
 			"the gate fails (exit %d) even with the rule intact, so it discriminates nothing"+
-				" - check that %q can run", clean, r.Gate.Run)}, nil
+				" - check that %q can run", clean.Exit, r.Gate.Run)}, nil
 	}
 
 	// TREATMENT: break the rule.
-	fx := filepath.Join(scratch, filepath.FromSlash(r.Gate.FixturePath))
-	if !strings.HasPrefix(filepath.Clean(fx), filepath.Clean(scratch)+string(os.PathSeparator)) {
-		return Result{}, errors.New("fixture_path escapes the repository root")
-	}
-	if err := os.MkdirAll(filepath.Dir(fx), 0o750); err != nil {
-		return Result{}, err
-	}
 	body := r.Gate.FixtureBody
 	if body == "" {
 		body = "hullcheck fixture: this file should make the gate fail\n"
 	}
-	if err := os.WriteFile(fx, []byte(body), 0o600); err != nil {
+	if err := dir.Write(r.Gate.FixturePath, body); err != nil {
 		return Result{}, err
 	}
 
-	code, err := runGate(scratch, r.Gate.Run, opt.Timeout)
+	broken, err := dir.Run(r.Gate.Run, opt.Timeout)
 	if err != nil {
 		return Result{}, err
 	}
-	if code != 0 {
+	if broken.TimedOut {
+		// A hang is not a catch. Reading it as one would manufacture a HOLD out
+		// of a gate that never reached a verdict.
+		return Result{r.ID, model.Broken, fmt.Sprintf(
+			"the gate passed with the rule intact but did not finish once it was broken,"+
+				" so it never reached a verdict - check that %q terminates", r.Gate.Run)}, nil
+	}
+	if broken.Exit != 0 {
 		return Result{r.ID, model.Hold, fmt.Sprintf(
 			"proven: the gate passed with the rule intact and failed (exit %d) when it was broken",
-			code)}, nil
+			broken.Exit)}, nil
 	}
 	return Result{r.ID, model.Fake,
 		"the gate passed even with the rule broken - a patch that is only paint"}, nil
-}
-
-func runGate(dir, run string, timeout time.Duration) (int, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "sh", "-c", run) //nolint:gosec // the manifest author declared this
-	cmd.Dir = dir
-	cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
-	cmd.Env = append(os.Environ(), "HULLCHECK_VERIFY=1")
-	err := cmd.Run()
-	if ctx.Err() != nil {
-		// A gate that hangs has not proven anything. Treat it as a failure to
-		// prove rather than as a pass.
-		return -1, nil
-	}
-	var ee *exec.ExitError
-	if errors.As(err, &ee) {
-		return ee.ExitCode(), nil
-	}
-	if err != nil {
-		return -1, err
-	}
-	return 0, nil
-}
-
-// copyTree copies a repository into scratch, skipping the directories that make a
-// copy expensive and that no gate should need.
-func copyTree(src, dst string) error {
-	return filepath.WalkDir(src, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil //nolint:nilerr // an unreadable entry must not abort the copy
-		}
-		rel, rerr := filepath.Rel(src, p)
-		if rerr != nil {
-			return nil
-		}
-		if rel == "." {
-			return nil
-		}
-		if d.IsDir() {
-			if skipCopy(d.Name()) {
-				return filepath.SkipDir
-			}
-			return os.MkdirAll(filepath.Join(dst, rel), 0o750)
-		}
-		if !d.Type().IsRegular() {
-			return nil
-		}
-		return copyFile(p, filepath.Join(dst, rel))
-	})
-}
-
-func skipCopy(name string) bool {
-	switch name {
-	case ".git", "node_modules", "vendor", ".venv", "venv", "dist", "build",
-		"target", ".next", "__pycache__", ".terraform":
-		return true
-	}
-	return false
-}
-
-func copyFile(src, dst string) error {
-	in, err := os.Open(src) //nolint:gosec // src comes from our own walk
-	if err != nil {
-		return nil //nolint:nilerr // skip what we cannot read
-	}
-	defer func() { _ = in.Close() }()
-	st, err := in.Stat()
-	if err != nil {
-		return nil //nolint:nilerr
-	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0o750); err != nil {
-		return err
-	}
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, st.Mode().Perm()) //nolint:gosec
-	if err != nil {
-		return err
-	}
-	defer func() { _ = out.Close() }()
-	_, err = io.Copy(out, in)
-	return err
 }
 
 // Apply folds verification results into a reading, replacing matched verdicts with

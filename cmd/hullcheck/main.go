@@ -169,14 +169,24 @@ func execute(args []string, stdout, stderr io.Writer) int {
 			return 0
 		}
 		fmt.Fprintf(stdout, "HULLCHECK gate density\n\n  %-28s %6s %7s\n", "tree", "gates", "files")
+		rootGates := 0
 		for _, t := range trees {
 			mark := " "
-			if t.Gates == 0 {
+			if t.Gates == 0 && !t.Root {
 				mark = "!"
 			}
-			fmt.Fprintf(stdout, "%s %-28s %6d %7d\n", mark, t.Path, t.Gates, t.Files)
+			files := fmt.Sprintf("%7d", t.Files)
+			if t.Root {
+				rootGates = t.Gates
+				files = "      -"
+			}
+			fmt.Fprintf(stdout, "%s %-28s %6d %s\n", mark, t.Path, t.Gates, files)
 		}
 		fmt.Fprintln(stdout, "\n  ! marks a tree with no gate of its own.")
+		if rootGates > 0 {
+			fmt.Fprintf(stdout, "  %d gate(s) live at the repository root and may cover any tree,\n"+
+				"  so a marked tree is not necessarily unenforced.\n", rootGates)
+		}
 		return 0
 	}
 
