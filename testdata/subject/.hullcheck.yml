@@ -1,0 +1,8 @@
+version: 1
+rules:
+  - id: RULES-1.1
+    statement: "Every asset must record its provenance."
+    severity: high
+    gate:
+      kind: command
+      run: "true"

@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/spaceship-alpha-9/hullcheck/internal/model"
@@ -43,10 +44,60 @@ type Rule struct {
 	Gate      *Gate  `json:"gate,omitempty"`
 }
 
+// Refusal is a claim that a tool declines to proceed under a stated condition.
+//
+// It is written as an experiment, not a description: Run is the command, When
+// describes the condition in prose, and Fixture creates it. The audit runs the
+// command twice - once normally, once with the condition present - so "it refuses"
+// becomes something proven rather than believed.
+type Refusal struct {
+	Tool string `json:"tool"`
+	Run  string `json:"run"`
+	When string `json:"when"`
+	// FixturePath and FixtureBody create the refusal condition, exactly as they
+	// do for a gate. Empty means the condition is the absence of everything: the
+	// command is run in an empty directory.
+	FixturePath string `json:"fixture_path,omitempty"`
+	FixtureBody string `json:"fixture_body,omitempty"`
+	// EmptyDir runs the command against an empty directory instead of a copy of
+	// the repository - the usual way to express "given nothing to work with".
+	EmptyDir bool `json:"empty_dir,omitempty"`
+	// Remove deletes a path in the scratch copy. Many refusal conditions are an
+	// absence - no policy, no manifest, no credentials - and an additive fixture
+	// cannot express one.
+	Remove string `json:"remove,omitempty"`
+	// ExpectExit is the exit code the tool claims to use when refusing.
+	ExpectExit int `json:"expect_exit"`
+	// ExpectOutput is a string the refusal must print, so an accidental crash
+	// with the right exit code is not mistaken for a considered refusal.
+	ExpectOutput string `json:"expect_output,omitempty"`
+}
+
+// Provenance declares what counts as a provenance record for a set of artifacts.
+//
+// Declaring the scheme is what makes the audit arithmetic instead of guesswork:
+// hullcheck does not need to know whether you use sidecars, SPDX, CycloneDX,
+// in-toto or C2PA - only where the artifacts are, where the record lives, and
+// which fields must be filled.
+type Provenance struct {
+	// Artifacts is a glob, ** supported, e.g. "art/**/*.png".
+	Artifacts string `json:"artifacts"`
+	// Record is where the record lives. {artifact} expands to the artifact path,
+	// {base} to it without its extension. A path with neither is a single shared
+	// record, such as an SBOM covering a whole tree.
+	Record string `json:"record"`
+	// Require are field names that must be present and non-empty in the record.
+	Require []string `json:"require,omitempty"`
+	// Ignore are globs excluded from the artifact set.
+	Ignore []string `json:"ignore,omitempty"`
+}
+
 // File is a parsed .hullcheck.yml.
 type File struct {
-	Version int    `json:"version"`
-	Rules   []Rule `json:"rules"`
+	Version    int          `json:"version"`
+	Rules      []Rule       `json:"rules"`
+	Refusals   []Refusal    `json:"refusals,omitempty"`
+	Provenance []Provenance `json:"provenance,omitempty"`
 }
 
 // Load reads a manifest. A missing file is not an error: it means unverified mode.
@@ -73,7 +124,9 @@ func Parse(r io.Reader) (*File, error) {
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	line := 0
 	var cur *Rule
-	inRules := false
+	var curRef *Refusal
+	var curProv *Provenance
+	section := ""
 
 	for sc.Scan() {
 		line++
@@ -89,7 +142,11 @@ func Parse(r io.Reader) (*File, error) {
 
 		switch {
 		case indent == 0 && body == "rules:":
-			inRules = true
+			section, cur, curRef, curProv = "rules", nil, nil, nil
+		case indent == 0 && body == "refusals:":
+			section, cur, curRef, curProv = "refusals", nil, nil, nil
+		case indent == 0 && body == "provenance:":
+			section, cur, curRef, curProv = "provenance", nil, nil, nil
 		case indent == 0 && strings.HasPrefix(body, "version:"):
 			v := strings.TrimSpace(strings.TrimPrefix(body, "version:"))
 			if v != "1" {
@@ -97,10 +154,30 @@ func Parse(r io.Reader) (*File, error) {
 			}
 		case indent == 0:
 			return nil, fmt.Errorf("line %d: unknown top-level key %q", line, firstKey(body))
-		case inRules && strings.HasPrefix(body, "- "):
+		case section == "rules" && strings.HasPrefix(body, "- "):
 			out.Rules = append(out.Rules, Rule{})
 			cur = &out.Rules[len(out.Rules)-1]
 			if err := assign(cur, strings.TrimPrefix(body, "- "), line); err != nil {
+				return nil, err
+			}
+		case section == "refusals" && strings.HasPrefix(body, "- "):
+			out.Refusals = append(out.Refusals, Refusal{})
+			curRef = &out.Refusals[len(out.Refusals)-1]
+			if err := assignRefusal(curRef, strings.TrimPrefix(body, "- "), line); err != nil {
+				return nil, err
+			}
+		case section == "provenance" && strings.HasPrefix(body, "- "):
+			out.Provenance = append(out.Provenance, Provenance{})
+			curProv = &out.Provenance[len(out.Provenance)-1]
+			if err := assignProv(curProv, strings.TrimPrefix(body, "- "), line); err != nil {
+				return nil, err
+			}
+		case curRef != nil && indent >= 4:
+			if err := assignRefusal(curRef, body, line); err != nil {
+				return nil, err
+			}
+		case curProv != nil && indent >= 4:
+			if err := assignProv(curProv, body, line); err != nil {
 				return nil, err
 			}
 		case cur != nil && indent >= 4 && indent < 8 && body == "gate:":
@@ -159,6 +236,75 @@ func assign(r *Rule, kv string, line int) error {
 		return fmt.Errorf("line %d: unknown rule key %q", line, k)
 	}
 	return nil
+}
+
+func assignRefusal(r *Refusal, kv string, line int) error {
+	k, v, ok := split(kv)
+	if !ok {
+		return fmt.Errorf("line %d: expected key: value, got %q", line, kv)
+	}
+	switch k {
+	case "tool":
+		r.Tool = v
+	case "run":
+		r.Run = v
+	case "when":
+		r.When = v
+	case "fixture_path":
+		r.FixturePath = v
+	case "fixture_body":
+		r.FixtureBody = v
+	case "empty_dir":
+		r.EmptyDir = v == "true"
+	case "remove":
+		r.Remove = v
+	case "expect_exit":
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return fmt.Errorf("line %d: expect_exit must be a number, got %q", line, v)
+		}
+		r.ExpectExit = n
+	case "expect_output":
+		r.ExpectOutput = v
+	default:
+		return fmt.Errorf("line %d: unknown refusal key %q", line, k)
+	}
+	return nil
+}
+
+func assignProv(p *Provenance, kv string, line int) error {
+	k, v, ok := split(kv)
+	if !ok {
+		return fmt.Errorf("line %d: expected key: value, got %q", line, kv)
+	}
+	switch k {
+	case "artifacts":
+		p.Artifacts = v
+	case "record":
+		p.Record = v
+	case "require":
+		p.Require = splitList(v)
+	case "ignore":
+		p.Ignore = splitList(v)
+	default:
+		return fmt.Errorf("line %d: unknown provenance key %q", line, k)
+	}
+	return nil
+}
+
+// splitList reads an inline list: [a, b, c].
+func splitList(v string) []string {
+	v = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(v, "["), "]"))
+	if v == "" {
+		return nil
+	}
+	var out []string
+	for _, p := range strings.Split(v, ",") {
+		if p = strings.TrimSpace(strings.Trim(p, `"'`)); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func assignGate(g *Gate, kv string, line int) error {

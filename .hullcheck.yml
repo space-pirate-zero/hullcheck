@@ -47,3 +47,22 @@ rules:
       proves: "exits non-zero when a credential-shaped string is present"
       fixture_path: zz_leaked.pem
       fixture_body: "-----BEGIN RSA PRIVATE KEY-----\n"
+
+# hullcheck's own refusals, proven rather than described. Each runs the tool twice:
+# once normally, once with the condition present. REFUSES means it worked and then
+# stopped, in the declared way.
+refusals:
+  - tool: hullcheck
+    when: "the repository states no rules"
+    run: "go build -o hc-probe ./cmd/hullcheck && ./hc-probe --no-banner testdata/subject"
+    remove: "testdata/subject/RULES.md"
+    expect_exit: 2
+    expect_output: "UNKNOWN"
+
+  - tool: hullcheck-verify
+    when: "the manifest cannot be parsed"
+    run: "go build -o hc-probe ./cmd/hullcheck && ./hc-probe --no-banner --verify testdata/subject"
+    fixture_path: "testdata/subject/.hullcheck.yml"
+    fixture_body: "version: 1\nrules:\n  - id: R\n    statment: typo\n"
+    expect_exit: 2
+    expect_output: "unknown rule key"

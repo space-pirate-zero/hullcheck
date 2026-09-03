@@ -4,12 +4,12 @@ BIN := hullcheck
 VERSION ?= dev
 MODULE := github.com/spaceship-alpha-9/hullcheck
 
-.PHONY: all check fmt vet test deps network readonly secrets dogfood build clean
+.PHONY: all check fmt vet test deps network readonly secrets dogfood refusals build clean
 
 all: check
 
 ## check: the full gate suite, in the order that fails cheapest first
-check: fmt vet deps network secrets test readonly dogfood
+check: fmt vet deps network secrets test readonly dogfood refusals
 
 ## fmt: every file gofmt-clean (CONTRIBUTING 1.3)
 fmt:
@@ -68,6 +68,11 @@ readonly:
 	if [ "$$before" != "$$after" ]; then echo "hullcheck modified the working tree"; exit 1; fi
 	@echo "ro    ok (working tree unchanged)"
 
+## refusals: prove hullcheck stops when it says it stops (CONTRIBUTING 3.6)
+refusals: build
+	@./$(BIN) --no-banner --refusals .
+	@echo "ref   ok"
+
 ## dogfood: hullcheck scores itself (CONTRIBUTING 1.7, 2.1)
 dogfood: build
 	@./$(BIN) --no-banner --fail-under 80 .
@@ -77,4 +82,4 @@ build:
 	@$(GO) build -ldflags "-X main.version=$(VERSION)" -o $(BIN) ./cmd/hullcheck
 
 clean:
-	@rm -f $(BIN)
+	@rm -f $(BIN) hc-probe

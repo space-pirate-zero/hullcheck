@@ -203,10 +203,66 @@ while an entire subsystem has no gate of its own. Breached rules are also dated
 by the commit that introduced them, so a gap opened last week reads differently
 from one open since 2019.
 
-Two features from the original design were **deliberately not built**: a "refusal
-audit" and a "provenance audit". Neither can be done generically without a pile of
-heuristics that produce confident-looking false findings, and this tool's whole
-argument is that a wrong number is worse than no number.
+## Proving your tools stop when they say they stop
+
+```sh
+hullcheck --refusals
+```
+
+The most valuable thing an unattended tool does is decline to proceed. Most tools
+have never had that conversation with themselves, and grepping scripts for
+`exit 1` to guess produces confident-looking nonsense.
+
+So this does not guess. A refusal is a **claim**, and a claim is testable. Declare
+one, and hullcheck runs the tool twice - once normally, once with the condition
+present:
+
+```yaml
+refusals:
+  - tool: indexer
+    when: "the checkout is a worktree"
+    run: "./index_assets.py ."
+    remove: "art/originals"        # conditions are often an ABSENCE
+    expect_exit: 2
+    expect_output: "refusing to index"
+```
+
+| | |
+|---|---|
+| **REFUSES** | proven: it worked normally, then stopped in the declared way |
+| **PROCEEDS** | it ran anyway under a condition it claims to refuse — **a silent downgrade** |
+| **BROKEN** | it failed either way, or crashed rather than refused |
+
+`PROCEEDS` is the finding worth having. A crash with the right exit code is not a
+considered refusal, and a tool that fails without the condition proves nothing —
+which is why the control run exists.
+
+## Can your artifacts say where they came from
+
+```sh
+hullcheck --provenance
+```
+
+Three questions get asked about a generated artifact: where did it come from, may
+we ship it, can we reproduce it. Sniffing for provenance-shaped files and guessing
+is worthless, so the repository **declares its scheme** and the audit becomes
+arithmetic:
+
+```yaml
+provenance:
+  - artifacts: "art/**/*.png"
+    record: "{artifact}.meta.json"
+    require: [source, model, license]
+```
+
+That works for sidecars, SPDX, CycloneDX, in-toto or C2PA without hullcheck
+needing to understand any of them. Verdicts are `RECORDED`, `INCOMPLETE` (a record
+that exists and does not answer — worse in one way than none, because it looks
+answered) and `MISSING`.
+
+With nothing declared it reports **UNKNOWN** and names the conventions it found by
+exact filename, so you can declare one. It never reports 100% for a repository
+with no artifacts registered: a denominator of zero is not a clean bill of health.
 
 ## Watching the trend, and gating pull requests
 
@@ -272,8 +328,10 @@ Verified mode **is** built: `--print-manifest`, `--verify`, the control run, and
 `FAKE` and `BROKEN` verdicts.
 
 Built: the reading, verified mode with the control run, Time-to-Truth, drift, PR
-mode, path coverage, gate bus-factor, ungoverned-since, the badge, and all six
-assist commands.
+mode, path coverage, gate bus-factor, ungoverned-since, the badge, the refusal and
+provenance audits, and all six assist commands.
+
+**hullcheck proves its own refusals**, in CI, on every pull request.
 
 **hullcheck verifies its own repository**: four gates declared with fixtures, all
 four proven by breaking the rule and watching the gate fail. The first verified

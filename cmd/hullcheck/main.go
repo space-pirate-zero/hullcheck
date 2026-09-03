@@ -23,6 +23,9 @@ import (
 	"github.com/spaceship-alpha-9/hullcheck/internal/history"
 	"github.com/spaceship-alpha-9/hullcheck/internal/insight"
 	"github.com/spaceship-alpha-9/hullcheck/internal/manifest"
+	"github.com/spaceship-alpha-9/hullcheck/internal/model"
+	"github.com/spaceship-alpha-9/hullcheck/internal/provenance"
+	"github.com/spaceship-alpha-9/hullcheck/internal/refusal"
 	"github.com/spaceship-alpha-9/hullcheck/internal/report"
 	"github.com/spaceship-alpha-9/hullcheck/internal/scan"
 	"github.com/spaceship-alpha-9/hullcheck/internal/verify"
@@ -50,6 +53,8 @@ flags:
   --paths           which top-level trees have gates, and which have none
   --owners          gates with one owner or none, from CODEOWNERS
   --badge           write a self-contained SVG coverage badge to stdout
+  --refusals        prove your unattended tools stop when they claim to
+  --provenance      can your generated artifacts say where they came from
   --base REF        diff mode: treat REF as the baseline (default origin/HEAD)
   --fail-under N    exit 1 if gate coverage is below N percent
   --weighted        judge --fail-under against severity-weighted coverage
@@ -90,6 +95,8 @@ func execute(args []string, stdout, stderr io.Writer) int {
 		showPaths = fs.Bool("paths", false, "gate density per top-level tree")
 		showOwn   = fs.Bool("owners", false, "gates with one owner or none")
 		badge     = fs.Bool("badge", false, "write an SVG coverage badge to stdout")
+		doRefuse  = fs.Bool("refusals", false, "prove declared refusals")
+		doProv    = fs.Bool("provenance", false, "audit artifact provenance")
 	)
 	fs.Usage = func() { fmt.Fprint(stderr, usage) }
 	if err := fs.Parse(args); err != nil {
@@ -138,6 +145,13 @@ func execute(args []string, stdout, stderr io.Writer) int {
 			}
 			rep.Since[s.RuleID] = label
 		}
+	}
+
+	if *doRefuse {
+		return refusalMode(root, rep, stdout, stderr)
+	}
+	if *doProv {
+		return provenanceMode(root, stdout, stderr)
 	}
 
 	if *badge {
@@ -335,4 +349,105 @@ func shortRef(ref string) string {
 		return ref[:12]
 	}
 	return ref
+}
+
+// refusalMode proves that unattended tools stop when they claim to. The verdict
+// that matters is PROCEEDS: a tool that says it refuses and does not.
+func refusalMode(root string, rep model.Report, stdout, stderr io.Writer) int {
+	m, _, err := manifest.Load(filepath.Join(root, manifest.Name))
+	if err != nil {
+		fmt.Fprintf(stderr, "hullcheck: %s: %v\n", manifest.Name, err)
+		return 2
+	}
+	if m == nil {
+		m = &manifest.File{}
+	}
+	res, err := refusal.Audit(m, rep, refusal.Options{Root: root})
+	if err != nil {
+		fmt.Fprintf(stderr, "hullcheck: %v\n", err)
+		return 2
+	}
+	if len(res) == 0 {
+		fmt.Fprintf(stderr, "hullcheck: UNKNOWN\n\n"+
+			"  No refusal is declared, so there is nothing to prove - which is not\n"+
+			"  the same as passing. Declare one in %s:\n\n"+
+			"    refusals:\n      - tool: your-tool\n        when: \"the input is absent\"\n"+
+			"        run: \"./your-tool .\"\n        remove: \"input.json\"\n"+
+			"        expect_exit: 2\n        expect_output: \"UNKNOWN\"\n", manifest.Name)
+		return 2
+	}
+	c := refusal.Counts(res)
+	fmt.Fprintf(stdout, "HULLCHECK refusals\n\n")
+	fmt.Fprintf(stdout, "  REFUSES    %4d   proven: worked normally, then stopped as declared\n", c[refusal.Refuses])
+	fmt.Fprintf(stdout, "  PROCEEDS   %4d   ran anyway under a condition it claims to refuse\n", c[refusal.Proceeds])
+	fmt.Fprintf(stdout, "  BROKEN     %4d   failed either way, or not in the way it declared\n", c[refusal.Broken])
+	fmt.Fprintln(stdout)
+	for _, r := range res {
+		fmt.Fprintf(stdout, "  %-10s %-22s %s\n", r.Verdict, truncate(r.Tool, 22), r.Why)
+	}
+	if c[refusal.Proceeds] > 0 {
+		fmt.Fprint(stdout, "\n  A tool that claims to stop and does not is a silent downgrade.\n")
+		return 1
+	}
+	return 0
+}
+
+// provenanceMode answers the three questions somebody will ask about a generated
+// artifact: where did it come from, may we ship it, can we reproduce it.
+func provenanceMode(root string, stdout, stderr io.Writer) int {
+	m, _, err := manifest.Load(filepath.Join(root, manifest.Name))
+	if err != nil {
+		fmt.Fprintf(stderr, "hullcheck: %s: %v\n", manifest.Name, err)
+		return 2
+	}
+	var decls []manifest.Provenance
+	if m != nil {
+		decls = m.Provenance
+	}
+	rep, err := provenance.Audit(root, decls)
+	if err != nil {
+		fmt.Fprintf(stderr, "hullcheck: %v\n", err)
+		return 2
+	}
+	if !rep.Declared {
+		fmt.Fprintf(stderr, "hullcheck: %s\n\n"+
+			"  Declare a scheme in %s to turn this into a number:\n\n"+
+			"    provenance:\n      - artifacts: \"art/**/*.png\"\n"+
+			"        record: \"{artifact}.meta.json\"\n        require: [source, model, license]\n",
+			provenance.Describe(rep), manifest.Name)
+		return 2
+	}
+	c := rep.Counts()
+	fmt.Fprintf(stdout, "HULLCHECK provenance\n\n")
+	fmt.Fprintf(stdout, "  RECORDED   %4d   a record exists and every required field is filled\n", c[provenance.Recorded])
+	fmt.Fprintf(stdout, "  INCOMPLETE %4d   a record exists but does not answer\n", c[provenance.Incomplete])
+	fmt.Fprintf(stdout, "  MISSING    %4d   no record at all\n\n", c[provenance.Missing])
+	shown := 0
+	for _, i := range rep.Items {
+		if i.Verdict == provenance.Recorded || shown >= 12 {
+			continue
+		}
+		shown++
+		absent := ""
+		if len(i.Absent) > 0 {
+			absent = "  absent: " + strings.Join(i.Absent, ", ")
+		}
+		fmt.Fprintf(stdout, "  %-10s %-44s%s\n", i.Verdict, truncate(i.Artifact, 44), absent)
+	}
+	fmt.Fprintf(stdout, "\n  Provenance coverage  %.0f%%\n", rep.Coverage()*100)
+	fmt.Fprint(stdout, "  Provenance is the only thing you can never recover later.\n")
+	if c[provenance.Missing]+c[provenance.Incomplete] > 0 {
+		return 1
+	}
+	return 0
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	if n <= 1 {
+		return s[:n]
+	}
+	return s[:n-1] + "."
 }

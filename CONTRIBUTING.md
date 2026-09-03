@@ -61,6 +61,11 @@ JSON output.
 
 *Gate: make test*
 
+3.6 Every refusal hullcheck claims must be provable: it works normally, then stops
+in the declared way under the declared condition.
+
+*Gate: make refusals*
+
 3.5 The assist layer must never compute a score. It drafts, names and explains
 only; every number comes from code a reader can audit.
 
