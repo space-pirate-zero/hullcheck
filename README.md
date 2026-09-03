@@ -190,6 +190,54 @@ repository it reads, asserted by `make readonly`.
 It refuses rather than flatters. Point it at a repository that states no rules and it
 reports `UNKNOWN` and exits 2. A reading with no denominator is a lie.
 
+## Watching the trend, and gating pull requests
+
+A snapshot starts an argument; a trend ends one.
+
+```sh
+hullcheck --since v1.4        # how coverage moved from a tag to now
+hullcheck diff --base main    # rules this branch added without gates
+```
+
+`diff` exits 1 only on rules that are **newly** unenforced. A repository can carry
+known gaps without every pull request paying for them; what it cannot accept is a
+new rule with nothing behind it.
+
+Both read history with `git archive` into a temp directory. `git worktree add`
+would be the obvious approach and is disqualified: it writes into `.git`.
+
+## Drafting the gates you are missing
+
+`hullcheck` tells you 28 rules are unenforced. `hullcheck-assist` hands you 28
+drafts to review.
+
+```sh
+hullcheck-assist plan .     # draft a gate for every BREACH
+hullcheck-assist name .     # name the rules your UNLOGGED gates already enforce
+```
+
+It is a **separate binary**, which is what keeps "no network package in the core's
+dependency graph" a fact about an artifact rather than a promise about behaviour.
+
+**The model never touches the number.** It drafts, names and explains. Every score
+is computed by code you can read — a score a model produces is a score a model can
+be talked out of.
+
+It finds a model in this order, stopping at the first hit:
+
+1. `--model`, or `HULLCHECK_MODEL` / `HULLCHECK_BASE_URL`
+2. an API key already in your environment — read, never written, never persisted
+3. **a local server already running** — Ollama, LM Studio, vLLM or llama.cpp,
+   probed in parallel on a 300 ms timeout. This is the path we optimise for: free,
+   private, and your repository never leaves the machine. A coder-class model is
+   preferred when the host offers several.
+4. an offer to start one in Docker — with the download size and RAM cost stated
+   **before** anything is pulled, only interactively, never in CI, and never
+   without you typing `y`
+
+Nothing is stored. If you want an API key to persist, that is your shell profile's
+job, not ours.
+
 ## Status
 
 **v0.1, the reading.** Honest about what it is: deterministic discovery that matches
@@ -201,8 +249,14 @@ quote a number it did not earn.
 Verified mode **is** built: `--print-manifest`, `--verify`, the control run, and the
 `FAKE` and `BROKEN` verdicts.
 
-Not built yet: drift across git history (`--since`), PR mode (`hullcheck diff`), and
-the separate `hullcheck-assist` binary that drafts the gates you are missing.
+Everything in the plan is built: the reading, verified mode with the control run,
+Time-to-Truth, drift, PR mode, and the assist layer.
+
+Honest limits: `--verify` proves gates you have declared *and given a fixture*; a
+gate without one is reported as declared-but-not-proven rather than counted as
+evidence. And a small local model is good at drafting a checker and naming a gate,
+weaker at reading long prose policy — the tool prints which model it used so you
+know how much scrutiny a draft deserves.
 
 ## Prior art, credited
 

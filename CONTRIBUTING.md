@@ -61,6 +61,11 @@ JSON output.
 
 *Gate: make test*
 
+3.5 The assist layer must never compute a score. It drafts, names and explains
+only; every number comes from code a reader can audit.
+
+*Gate: make network*
+
 3.4 A gate must never be reported as proven without a control run. A command that
 cannot run exits non-zero and would otherwise read as a gate that works.
 

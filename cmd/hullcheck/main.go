@@ -17,8 +17,10 @@ import (
 	"strconv"
 
 	"path/filepath"
+	"strings"
 
 	"github.com/spaceship-alpha-9/hullcheck/internal/banner"
+	"github.com/spaceship-alpha-9/hullcheck/internal/history"
 	"github.com/spaceship-alpha-9/hullcheck/internal/manifest"
 	"github.com/spaceship-alpha-9/hullcheck/internal/report"
 	"github.com/spaceship-alpha-9/hullcheck/internal/scan"
@@ -36,12 +38,15 @@ const usage = `hullcheck - check the hull before you trust the air
 
 usage:
   hullcheck [flags] [path]
+  hullcheck diff [--base REF] [path]     rules newly unenforced since REF
 
 flags:
   --json            emit the reading as JSON
   --markdown        emit a PR-comment summary
   --print-manifest  print a .hullcheck.yml derived from this reading, to stdout
   --verify          prove each declared gate fails when its rule is broken
+  --since REF       show how coverage moved from REF to now (repeatable trend)
+  --base REF        diff mode: treat REF as the baseline (default origin/HEAD)
   --fail-under N    exit 1 if gate coverage is below N percent
   --weighted        judge --fail-under against severity-weighted coverage
   --no-banner       suppress the wordmark
@@ -63,6 +68,9 @@ func main() {
 // execute is main() with its edges injected, so the exit-code contract - which is
 // this tool's public API - can be tested rather than asserted.
 func execute(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "diff" {
+		return diffMode(args[1:], stdout, stderr)
+	}
 	fs := flag.NewFlagSet("hullcheck", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
@@ -74,6 +82,7 @@ func execute(args []string, stdout, stderr io.Writer) int {
 		showVer   = fs.Bool("version", false, "print version and exit")
 		printMan  = fs.Bool("print-manifest", false, "print a manifest to stdout")
 		doVerify  = fs.Bool("verify", false, "prove declared gates actually fail")
+		since     = fs.String("since", "", "show how coverage moved from this ref")
 	)
 	fs.Usage = func() { fmt.Fprint(stderr, usage) }
 	if err := fs.Parse(args); err != nil {
@@ -93,6 +102,10 @@ func execute(args []string, stdout, stderr io.Writer) int {
 	// Chrome goes to stderr and only to a terminal, so `hullcheck --json | jq`
 	// stays byte-identical with and without a tty.
 	banner.Write(stderr, cols(), *noBanner, isTTY(os.Stderr))
+
+	if *since != "" {
+		return driftMode(root, *since, stdout, stderr)
+	}
 
 	rep, err := scan.Run(root)
 	if err != nil {
@@ -186,4 +199,72 @@ func cols() int {
 		}
 	}
 	return 80
+}
+
+// driftMode reports coverage at a past ref and now. A snapshot starts an argument;
+// a trend ends one.
+func driftMode(root, since string, stdout, stderr io.Writer) int {
+	pts, err := history.Drift(root, []string{since})
+	if err != nil {
+		fmt.Fprintf(stderr, "hullcheck: %v\n", err)
+		return 2
+	}
+	fmt.Fprintf(stdout, "HULLCHECK drift\n\n  %-24s %8s %8s %7s\n",
+		"ref", "coverage", "rules", "breach")
+	for _, p := range pts {
+		fmt.Fprintf(stdout, "  %-24s %7.0f%% %8d %7d\n", shortRef(p.Ref), p.Coverage, p.Rules, p.Breaches)
+	}
+	if len(pts) >= 2 {
+		first, last := pts[0], pts[len(pts)-1]
+		delta := last.Coverage - first.Coverage
+		switch {
+		case delta < 0:
+			fmt.Fprintf(stdout, "\n  Coverage fell %.0f points since %s.\n", -delta, shortRef(first.Ref))
+		case delta > 0:
+			fmt.Fprintf(stdout, "\n  Coverage rose %.0f points since %s.\n", delta, shortRef(first.Ref))
+		default:
+			fmt.Fprintf(stdout, "\n  Coverage is unchanged since %s.\n", shortRef(first.Ref))
+		}
+	}
+	return 0
+}
+
+// diffMode is the pull-request gate: adding a rule without adding its gate is the
+// one change a living codebase cannot accept. Pre-existing gaps are not the PR's
+// fault and do not fail it.
+func diffMode(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("hullcheck diff", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	base := fs.String("base", "origin/HEAD", "baseline ref")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	root := "."
+	if fs.NArg() > 0 {
+		root = fs.Arg(0)
+	}
+	added, _, err := history.Diff(root, *base)
+	if err != nil {
+		fmt.Fprintf(stderr, "hullcheck: %v\n", err)
+		return 2
+	}
+	if len(added) == 0 {
+		fmt.Fprintf(stdout, "hullcheck: no rules were left unenforced since %s\n", *base)
+		return 0
+	}
+	fmt.Fprintf(stdout, "hullcheck: %d rule(s) added without a gate since %s\n\n", len(added), *base)
+	for _, f := range added {
+		fmt.Fprintf(stdout, "  BREACH  %-18s %s\n          %s\n", f.Rule.ID, f.Rule.Statement, f.Rule.Source)
+	}
+	fmt.Fprint(stdout, "\n  A rule nobody can test is a rule nobody can follow.\n")
+	return 1
+}
+
+// shortRef abbreviates a full object id so the drift table keeps its columns. Tags
+// and branch names are already short and are left alone.
+func shortRef(ref string) string {
+	if len(ref) == 40 && !strings.ContainsAny(ref, "/ .") {
+		return ref[:12]
+	}
+	return ref
 }

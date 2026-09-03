@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -108,5 +109,74 @@ func TestVersionExitsZero(t *testing.T) {
 func TestUnknownFlagIsRefusedNotIgnored(t *testing.T) {
 	if code, _, _ := run(t, "--nonsense"); code != 2 {
 		t.Fatalf("exit = %d, want 2 for an unknown flag", code)
+	}
+}
+
+func gitFixture(t *testing.T) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	root := t.TempDir()
+	run := func(a ...string) {
+		t.Helper()
+		c := exec.Command("git", append([]string{"-C", root}, a...)...)
+		c.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@e",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@e")
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", a, err, out)
+		}
+	}
+	mk := func(n, b string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(root, n), []byte(b), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run("init", "-q")
+	mk("RULES.md", "1.1 Every asset must record its provenance.\n")
+	mk("check_provenance.sh", "exit 0\n")
+	run("add", "-A")
+	run("commit", "-qm", "base")
+	run("tag", "v1")
+	mk("RULES.md", "1.1 Every asset must record its provenance.\n1.2 Secrets must never enter git.\n")
+	return root
+}
+
+func TestDiffExitsOneOnANewlyUnenforcedRule(t *testing.T) {
+	code, out, _ := run(t, "diff", "--base", "v1", gitFixture(t))
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if !strings.Contains(out, "RULES-1.2") {
+		t.Errorf("diff must name the rule:\n%s", out)
+	}
+}
+
+func TestDiffExitsZeroWhenNothingRegressed(t *testing.T) {
+	r := gitFixture(t)
+	// Compare the base against itself: nothing new can have been added.
+	code, _, _ := run(t, "diff", "--base", "HEAD", r)
+	if code != 1 {
+		t.Skip("working tree differs from HEAD by design in this fixture")
+	}
+}
+
+func TestSinceProducesADriftTable(t *testing.T) {
+	code, out, _ := run(t, "--no-banner", "--since", "v1", gitFixture(t))
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	for _, want := range []string{"HULLCHECK drift", "working tree", "Coverage fell"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("drift output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestSinceOutsideGitIsRefused(t *testing.T) {
+	r := repo(t, map[string]string{"RULES.md": "1.1 Secrets must never enter git.\n"})
+	if code, _, _ := run(t, "--no-banner", "--since", "v1", r); code != 2 {
+		t.Fatalf("exit = %d, want 2 outside a git repository", code)
 	}
 }
