@@ -206,7 +206,7 @@ func parseFile(root, path string) ([]model.Rule, []Skipped, error) {
 			}
 			out = append(out, model.Rule{
 				ID: id, Source: source, File: rel, Line: n,
-				Statement: body, Severity: clauseSeverity(body, blk),
+				Statement: body, Severity: clauseSeverity(body, blk), Clause: true,
 			})
 			clause = len(out) - 1
 			continue
@@ -268,19 +268,20 @@ func block(lines []string, fenced []bool, start int) []string {
 // clauseHolds decides whether a numbered clause states a rule, reading the whole
 // block rather than the first line, and returns why when it does not.
 func clauseHolds(body string, blk []string) (why string, ok bool) {
-	if len(body) < 12 {
-		return "too short to be a statement", false
-	}
-	if hasModal(body) || looksNormative(body) {
-		return "", true
-	}
 	// A document that names a gate for a clause has already said it is a rule.
 	// That is a stronger signal than any modal, and it is the repository's own
-	// word rather than the scanner's inference.
+	// word rather than the scanner's inference - so it is checked before the
+	// length guard, which exists to filter clauses nobody has vouched for.
 	for _, l := range blk {
 		if reGate.MatchString(l) {
 			return "", true
 		}
+	}
+	if len(body) < 12 {
+		return "too short to be a statement, and nothing beneath it names a gate", false
+	}
+	if hasModal(body) || looksNormative(body) {
+		return "", true
 	}
 	for _, l := range blk {
 		c := clean(l)

@@ -596,10 +596,20 @@ func clauseMode(root string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "hullcheck: UNKNOWN\n\n  %v\n", scan.ErrNoPolicy)
 		return 2
 	}
+	// Both figures are clause counts, so they can be added and checked against
+	// the document. The reading's rule total is larger, because bullets and
+	// headings carrying obligations are rules too.
+	counted := 0
+	for _, r := range rs {
+		if r.Clause {
+			counted++
+		}
+	}
 	fmt.Fprintf(stdout, "HULLCHECK clauses\n\n"+
-		"  %d rule(s) counted across %d policy document%s\n"+
-		"  %d numbered clause(s) seen and not counted\n\n",
-		len(rs), len(docs), plural(len(docs)), len(skipped))
+		"  %d numbered clause(s) counted across %d policy document%s\n"+
+		"  %d numbered clause(s) seen and not counted\n"+
+		"  %d rule(s) in the denominator, counting bullets and headings too\n\n",
+		counted, len(docs), plural(len(docs)), len(skipped), len(rs))
 	if len(skipped) == 0 {
 		fmt.Fprint(stdout, "  Every numbered clause in these documents is in the denominator.\n")
 		return 0

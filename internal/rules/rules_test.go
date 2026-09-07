@@ -276,3 +276,26 @@ func keys(rs []model.Rule) []string {
 	}
 	return out
 }
+
+// A Gate: line is the repository's own word that a clause is a rule, so it wins
+// over the length guard, which exists to filter clauses nobody has vouched for.
+func TestAGateLineBeatsTheLengthGuard(t *testing.T) {
+	root := t.TempDir()
+	doc := "3.1 Palette.\n\n*Gate: make brand*\n\n3.2 Summary.\n"
+	if err := os.WriteFile(filepath.Join(root, "RULES.md"), []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rs, _, skipped, err := DiscoverAll(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rs) != 1 || rs[0].ID != "RULES-3.1" {
+		t.Fatalf("a short clause that names its gate must be counted, got %v", keys(rs))
+	}
+	if !rs[0].Clause {
+		t.Error("a numbered clause must be marked as one, so the counts can be audited")
+	}
+	if len(skipped) != 1 || skipped[0].ID != "RULES-3.2" {
+		t.Fatalf("a short clause with no gate is still declined, got %+v", skipped)
+	}
+}
