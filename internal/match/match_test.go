@@ -194,10 +194,24 @@ func TestBaseAndFlatten(t *testing.T) {
 			t.Errorf("base(%q) = %q, want %q", in, got, want)
 		}
 	}
-	if got := flatten("python books/nightly/check.py --strict"); got != "python check.py --strict" {
-		t.Errorf("flatten = %q", got)
+	words, paths := split("python books/nightly/check.py --strict")
+	if words != "python --strict" || paths != "check.py" {
+		t.Errorf("split = %q / %q", words, paths)
 	}
-	if got := flatten("make deps"); got != "make deps" {
-		t.Errorf("flatten must leave a plain command alone, got %q", got)
+	if words, paths := split("make deps"); words != "make deps" || paths != "" {
+		t.Errorf("split must leave a plain command alone, got %q / %q", words, paths)
+	}
+}
+
+// base cannot tell a program from a trailing directory, so a path's last element
+// is weak evidence wherever it appears - including at the end of a command.
+func TestATrailingDirectoryInACommandIsWeakEvidence(t *testing.T) {
+	rs := []model.Rule{rule("R-1", "Nightly renders must never overwrite a published edition.")}
+	gs := []model.Gate{
+		gate("ci", "cd books/meatware-nightly && make check", ".github/workflows/ci.yml", model.PullReq),
+	}
+	if got := verdictOf(Run(rs, gs), "R-1"); got != model.Breach {
+		t.Fatalf("verdict = %q, want BREACH - a directory at the end of a command is "+
+			"still a directory", got)
 	}
 }

@@ -173,8 +173,10 @@ Three signals, in descending order of trust:
 The gate's **directories are never evidence**. In a flat repository a path adds a
 couple of words; in a monorepo it is a topic list —
 `books/meatware-nightly/check_brand.py` offers `books`, `meatware`, `nightly` and
-`brand` to any rule that mentions any of them. Directories are dropped from the path
-*and* from the command, because a check script's command is its own path.
+`brand` to any rule that mentions any of them. A path is treated as a path wherever
+it appears — in the gate's file *or* inside its command — because a check script's
+command is its own path, and `cd books/meatware-nightly && make check` ends in a
+directory name that is not a description of anything.
 
 A word that appears in more than a quarter of the repository's gates is describing
 the repository, not the rule, and carries no match. `books` matching 43 of 206 gates

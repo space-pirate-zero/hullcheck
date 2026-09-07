@@ -151,9 +151,10 @@ func index(gates []model.Gate) *corpus {
 	}
 	df := map[string]int{}
 	for i, g := range gates {
-		strong := tokenSet(g.Name + " " + flatten(g.Run))
+		words, paths := split(g.Run)
+		strong := tokenSet(g.Name + " " + words)
 		weak := map[string]bool{}
-		for t := range tokenSet(base(g.File)) {
+		for t := range tokenSet(base(g.File) + " " + paths) {
 			if !strong[t] {
 				weak[t] = true
 			}
@@ -204,18 +205,26 @@ func (c *corpus) match(i int, g model.Gate, ruleToks []string) (why string, ok b
 	return "", false
 }
 
-// flatten reduces every path-shaped word in a command to its last element. A
-// check script's Run is its own path, so leaving the directories in would let the
-// path back in through the command - the same leak by another route. What a
-// command does is its program and its flags, not the tree it happens to sit in.
-func flatten(cmd string) string {
-	fields := strings.Fields(cmd)
-	for i, f := range fields {
+// split separates a command into the words that describe it and the paths it
+// mentions. A check script's Run is its own path, so leaving paths among the
+// describing words would let the tree back in through the command - the same leak
+// by another route.
+//
+// Only the last element of each path is kept, and it is kept as a path. base
+// cannot tell a program from a trailing directory: "cd books/meatware-nightly &&
+// make check" ends in a directory name, and treating that as a word a human chose
+// to describe the gate is how "nightly" credits a gate that checks nothing of the
+// kind. Paths are weak evidence wherever they appear.
+func split(cmd string) (words, paths string) {
+	var w, p []string
+	for _, f := range strings.Fields(cmd) {
 		if strings.ContainsAny(f, "/\\") {
-			fields[i] = base(f)
+			p = append(p, base(f))
+			continue
 		}
+		w = append(w, f)
 	}
-	return strings.Join(fields, " ")
+	return strings.Join(w, " "), strings.Join(p, " ")
 }
 
 // base is the last element of a slash-separated path. Directory names in a
