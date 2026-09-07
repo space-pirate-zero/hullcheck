@@ -160,6 +160,33 @@ hullcheck --clauses .
     no obligation in the clause or in the text beneath it
 ```
 
+## How a rule is matched to a gate
+
+Three signals, in descending order of trust:
+
+1. **The rule names its gate.** A `Gate: make preflight` annotation is the repository's
+   own word, and nothing beats it.
+2. **The gate's name or command.** Those are what a human chose to describe what the
+   gate does. One distinctive shared word is a link.
+3. **The gate's filename.** Weak, so it takes two distinct words agreeing.
+
+The gate's **directories are never evidence**. In a flat repository a path adds a
+couple of words; in a monorepo it is a topic list —
+`books/meatware-nightly/check_brand.py` offers `books`, `meatware`, `nightly` and
+`brand` to any rule that mentions any of them. Directories are dropped from the path
+*and* from the command, because a check script's command is its own path.
+
+A word that appears in more than a quarter of the repository's gates is describing
+the repository, not the rule, and carries no match. `books` matching 43 of 206 gates
+is not evidence.
+
+Every match says where it came from, so it can be argued with:
+
+```
+"provenance" appears in both the rule and the gate's name "check-provenance" (Makefile)
+"sidecar" and "provenance" appear in both the rule and the filename provenance_sidecar.sh
+```
+
 ## Turning the reading into a score
 
 The default run is a *reading*: it matched rules to gates by name and reference. To
