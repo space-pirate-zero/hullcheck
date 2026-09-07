@@ -424,3 +424,75 @@ func TestRefusalsExitOneOnUnprovable(t *testing.T) {
 		t.Errorf("exit = %d, want 1: UNPROVABLE is not a pass", code)
 	}
 }
+
+// Issue #9: the usage text lists the global flags alongside `hullcheck diff`,
+// which implies they compose. --no-banner in particular is exactly what someone
+// adds when scripting diff in CI, and it used to produce "not a directory: diff".
+func TestGlobalFlagsMayPrecedeTheSubcommand(t *testing.T) {
+	root := gitFixture(t)
+	// Every ordering names one rule added without a gate since v1, so they must
+	// all reach the same verdict.
+	for _, args := range [][]string{
+		{"diff", "--base", "v1", root},
+		{"--no-banner", "diff", "--base", "v1", root},
+		{"diff", "--base", "v1", "--no-banner", root},
+		{"--no-banner", "diff", root, "--base", "v1"},
+	} {
+		code, out, errOut := run(t, args...)
+		if code != 1 {
+			t.Errorf("%v: exit = %d, want 1\n%s%s", args, code, out, errOut)
+		}
+		if !strings.Contains(out, "RULES-1.2") {
+			t.Errorf("%v: did not reach diff mode:\n%s%s", args, out, errOut)
+		}
+		if strings.Contains(errOut, "not a directory") {
+			t.Errorf("%v: reported a filesystem problem that does not exist:\n%s", args, errOut)
+		}
+	}
+}
+
+// A flag diff does nothing with is refused by name. Accepting and ignoring it is
+// how a user comes to believe something ran that did not.
+func TestDiffRefusesAFlagItDoesNotActOn(t *testing.T) {
+	code, _, errOut := run(t, "--json", "diff", "--base", "v1", gitFixture(t))
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2", code)
+	}
+	if !strings.Contains(errOut, "--json") || !strings.Contains(errOut, "--base and --no-banner") {
+		t.Errorf("the message must name the flag and what diff does take:\n%s", errOut)
+	}
+}
+
+// --base outside diff mode is equally meaningless and equally refused.
+func TestBaseOutsideDiffIsRefused(t *testing.T) {
+	code, _, errOut := run(t, "--no-banner", "--base", "main", gated(t))
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2", code)
+	}
+	if !strings.Contains(errOut, "--base") {
+		t.Errorf("the message must name the flag:\n%s", errOut)
+	}
+}
+
+// A flag written after the path used to be dropped on the floor.
+func TestAFlagAfterThePathStillCounts(t *testing.T) {
+	code, out, _ := run(t, "--no-banner", gated(t), "--json")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if !strings.HasPrefix(strings.TrimSpace(out), "{") {
+		t.Errorf("--json after the path was ignored:\n%s", out)
+	}
+}
+
+// Two paths is a mistake, and reading the first while dropping the second is the
+// kind of silence this tool is against.
+func TestTwoPathsAreRefused(t *testing.T) {
+	code, _, errOut := run(t, "--no-banner", ".", "..")
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2", code)
+	}
+	if !strings.Contains(errOut, "one path at a time") {
+		t.Errorf("errOut = %s", errOut)
+	}
+}

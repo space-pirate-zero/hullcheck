@@ -122,6 +122,27 @@ go install github.com/space-pirate-zero/hullcheck/cmd/hullcheck@latest
 hullcheck .
 ```
 
+## The command line
+
+One flag set, in any order. `diff` is a subcommand, and the global flags compose
+with it from either side:
+
+```sh
+hullcheck --no-banner diff --base main .
+hullcheck diff --base main . --no-banner     # the same command
+```
+
+A flag the mode does not act on is refused by name rather than accepted and
+ignored — `--json` means nothing to `diff`, and being told so beats a report you
+believed was JSON:
+
+```
+hullcheck: hullcheck diff does not act on --json.
+  It reports the rules left unenforced since a baseline, and takes --base and --no-banner.
+```
+
+So is a second path, and so is `--base` outside `diff`.
+
 ## What counts as a rule
 
 A numbered clause is judged by its **whole block** — the clause line and everything
