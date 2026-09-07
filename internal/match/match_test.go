@@ -1,6 +1,8 @@
 package match
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/space-pirate-zero/hullcheck/internal/model"
@@ -107,5 +109,109 @@ func TestCoverageAndWeighting(t *testing.T) {
 	// One high rule (weight 3) held of 3+1=4 total weight.
 	if got := rep.WeightedCoverage(); got != 0.75 {
 		t.Errorf("weighted coverage = %v, want 0.75", got)
+	}
+}
+
+// Issue #5: in a monorepo a path is a topic list, not evidence. Every rule that
+// mentions a directory name was credited to every gate that happens to live
+// under it.
+func TestADirectoryNameDoesNotLinkARuleToAGate(t *testing.T) {
+	rs := []model.Rule{rule("R-1", "New titles start from the template; never copy an existing book.")}
+	gs := []model.Gate{
+		gate("brand-check", "make brand-check", "books/_template/Makefile", model.PullReq),
+	}
+	if got := verdictOf(Run(rs, gs), "R-1"); got != model.Breach {
+		t.Fatalf("verdict = %q, want BREACH — the rule was credited to a gate on the "+
+			"directory it happens to live in", got)
+	}
+}
+
+// A check script's command is its own path, so the directories must not come back
+// in through the command.
+func TestAPathInTheCommandDoesNotLinkEither(t *testing.T) {
+	rs := []model.Rule{rule("R-1", "New titles start from the template; never copy an existing book.")}
+	gs := []model.Gate{
+		gate("check_style.py", "books/nightly/check_style.py", "books/nightly/check_style.py", model.PullReq),
+	}
+	if got := verdictOf(Run(rs, gs), "R-1"); got != model.Breach {
+		t.Fatalf("verdict = %q, want BREACH — a path leaked in through the command", got)
+	}
+}
+
+// The filename is weak evidence, so it takes two words agreeing.
+func TestAFilenameLinksOnlyWhenTwoWordsAgree(t *testing.T) {
+	one := []model.Gate{gate("job", "bash ci.sh", "provenance.sh", model.PullReq)}
+	rs := []model.Rule{rule("R-1", "Every asset must record its provenance somewhere durable.")}
+	if got := verdictOf(Run(rs, one), "R-1"); got != model.Breach {
+		t.Errorf("verdict = %q, want BREACH — one shared word with a filename is not evidence", got)
+	}
+
+	two := []model.Gate{gate("job", "bash ci.sh", "provenance_sidecar.sh", model.PullReq)}
+	rs = []model.Rule{rule("R-1", "Every asset must record its provenance in a sidecar.")}
+	if got := verdictOf(Run(rs, two), "R-1"); got != model.Hold {
+		t.Errorf("verdict = %q, want HOLD — two words agreeing in a filename is a link", got)
+	}
+}
+
+// A word that turns up in a quarter of every gate is describing the repository,
+// not the rule.
+func TestATokenCommonAcrossGatesCarriesNoMatch(t *testing.T) {
+	var gs []model.Gate
+	for i := 0; i < 12; i++ {
+		gs = append(gs, gate(fmt.Sprintf("brand-check-%d", i),
+			fmt.Sprintf("make brand-check-%d", i), fmt.Sprintf("books/b%d/Makefile", i), model.PullReq))
+	}
+	rs := []model.Rule{rule("R-1", "Only brand voice identifiers from the registry may be used.")}
+	if got := verdictOf(Run(rs, gs), "R-1"); got != model.Breach {
+		t.Fatalf("verdict = %q, want BREACH — \"brand\" is in every gate and identifies none", got)
+	}
+
+	// The same word in a repository where only one gate carries it is evidence.
+	few := []model.Gate{
+		gate("brand-check", "make brand-check", "Makefile", model.PullReq),
+		gate("fmt", "make fmt", "Makefile", model.PullReq),
+	}
+	if got := verdictOf(Run(rs, few), "R-1"); got != model.Hold {
+		t.Errorf("verdict = %q, want HOLD — one gate named for the rule is a link", got)
+	}
+}
+
+// The evidence has to name where it came from, or a reader cannot audit it.
+func TestWhyNamesTheProvenanceOfTheMatch(t *testing.T) {
+	rs := []model.Rule{rule("R-1", "Every asset must record its provenance.")}
+	gs := []model.Gate{gate("provenance", "make provenance", "Makefile", model.PullReq)}
+	rep := Run(rs, gs)
+	if why := rep.Findings[0].Why; !strings.Contains(why, "the gate's name") {
+		t.Errorf("why = %q, want it to say the match came from the gate's name", why)
+	}
+}
+
+func TestBaseAndFlatten(t *testing.T) {
+	for in, want := range map[string]string{
+		"a/b/c.py": "c.py", "c.py": "c.py", "": "", "a/": "",
+	} {
+		if got := base(in); got != want {
+			t.Errorf("base(%q) = %q, want %q", in, got, want)
+		}
+	}
+	words, paths := split("python books/nightly/check.py --strict")
+	if words != "python --strict" || paths != "check.py" {
+		t.Errorf("split = %q / %q", words, paths)
+	}
+	if words, paths := split("make deps"); words != "make deps" || paths != "" {
+		t.Errorf("split must leave a plain command alone, got %q / %q", words, paths)
+	}
+}
+
+// base cannot tell a program from a trailing directory, so a path's last element
+// is weak evidence wherever it appears - including at the end of a command.
+func TestATrailingDirectoryInACommandIsWeakEvidence(t *testing.T) {
+	rs := []model.Rule{rule("R-1", "Nightly renders must never overwrite a published edition.")}
+	gs := []model.Gate{
+		gate("ci", "cd books/meatware-nightly && make check", ".github/workflows/ci.yml", model.PullReq),
+	}
+	if got := verdictOf(Run(rs, gs), "R-1"); got != model.Breach {
+		t.Fatalf("verdict = %q, want BREACH - a directory at the end of a command is "+
+			"still a directory", got)
 	}
 }
