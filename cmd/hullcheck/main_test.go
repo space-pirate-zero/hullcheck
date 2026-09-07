@@ -377,3 +377,28 @@ func TestVerifyCountsARuleDiscoveryDidNotFind(t *testing.T) {
 		t.Errorf("the manifest supplied a rule and must be listed as a source: %v", rep.Docs)
 	}
 }
+
+// The denominator has to be auditable: the clauses discovery declined are exactly
+// the ones a reader cannot otherwise see.
+func TestClausesListsWhatWasNotCounted(t *testing.T) {
+	root := repo(t, map[string]string{
+		"RULES.md": "1.1 Every asset must record its provenance.\n\n" +
+			"1.2 Overview of the section that follows.\n",
+	})
+	code, out, _ := run(t, "--no-banner", "--clauses", root)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0\n%s", code, out)
+	}
+	if !strings.Contains(out, "RULES-1.2") || !strings.Contains(out, "no obligation") {
+		t.Errorf("the skipped clause and its reason must be named:\n%s", out)
+	}
+	if strings.Contains(out, "RULES-1.1") {
+		t.Errorf("a counted clause is not a skip:\n%s", out)
+	}
+}
+
+func TestClausesRefusesARepositoryWithNoPolicy(t *testing.T) {
+	if code, _, _ := run(t, "--no-banner", "--clauses", t.TempDir()); code != 2 {
+		t.Errorf("exit = %d, want 2", code)
+	}
+}

@@ -9,6 +9,7 @@ package rules
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -55,21 +56,46 @@ var strongModals = []string{
 // softModals denote a preference rather than an obligation.
 var softModals = []string{"should not", "should", "prefer", "avoid", "recommended", "ought to"}
 
+// Skipped is a numbered clause discovery saw and did not count.
+//
+// A denominator nobody can audit is the same problem as a rule nobody can test.
+// Every clause the scanner declines is recorded with the reason, so "36 rules
+// found" can be checked rather than believed.
+type Skipped struct {
+	ID        string `json:"id"`
+	Source    string `json:"source"`
+	File      string `json:"file"`
+	Line      int    `json:"line"`
+	Statement string `json:"statement"`
+	Why       string `json:"why"`
+}
+
 // Discover walks root and returns every rule it can justify, plus the policy
 // documents it read. Errors reading an individual file are skipped, not fatal:
 // a single unreadable doc must not deny you a reading of the rest.
 func Discover(root string) ([]model.Rule, []string, error) {
+	rs, docs, _, err := DiscoverAll(root)
+	return rs, docs, err
+}
+
+// DiscoverAll is Discover plus the numbered clauses it declined to count. It is
+// what --clauses prints.
+func DiscoverAll(root string) ([]model.Rule, []string, []Skipped, error) {
 	files, err := policyFiles(root)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	var out []model.Rule
+	var (
+		out     []model.Rule
+		skipped []Skipped
+	)
 	for _, f := range files {
-		rs, err := parseFile(root, f)
+		rs, sk, err := parseFile(root, f)
 		if err != nil {
 			continue
 		}
 		out = append(out, rs...)
+		skipped = append(skipped, sk...)
 	}
 	rel := make([]string, 0, len(files))
 	for _, f := range files {
@@ -77,7 +103,7 @@ func Discover(root string) ([]model.Rule, []string, error) {
 		rel = append(rel, filepath.ToSlash(r))
 	}
 	sort.Strings(rel)
-	return out, rel, nil
+	return out, rel, skipped, nil
 }
 
 func policyFiles(root string) ([]string, error) {
@@ -122,10 +148,10 @@ func skipDir(name string) bool {
 	return false
 }
 
-func parseFile(root, path string) ([]model.Rule, error) {
+func parseFile(root, path string) ([]model.Rule, []Skipped, error) {
 	fh, err := os.Open(path) //nolint:gosec // path comes from our own walk of root
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer func() { _ = fh.Close() }()
 
@@ -133,54 +159,151 @@ func parseFile(root, path string) ([]model.Rule, error) {
 	rel = filepath.ToSlash(rel)
 	base := strings.TrimSuffix(strings.ToUpper(filepath.Base(path)), ".MD")
 
+	lines, fenced, err := read(fh)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	var (
 		out     []model.Rule
-		inFence bool
-		n       int
+		skipped []Skipped
 		seq     int
+		// clause is the index in out of the rule that owns the block being
+		// walked, so a gate annotation inside the block can bind to it and not
+		// only to whichever bullet happened to come last.
+		clause = -1
 	)
-	sc := bufio.NewScanner(fh)
-	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	for sc.Scan() {
-		n++
-		line := sc.Text()
-		if reFence.MatchString(line) {
-			inFence = !inFence
+	for i, line := range lines {
+		if fenced[i] {
 			continue
 		}
-		if inFence {
-			continue
-		}
+		n := i + 1
+		source := fmt.Sprintf("%s:%d", rel, n)
+
 		// A gate annotation binds to the rule it follows.
-		if m := reGate.FindStringSubmatch(line); m != nil && len(out) > 0 {
-			out[len(out)-1].GateHint = clean(m[1])
+		if m := reGate.FindStringSubmatch(line); m != nil {
+			hint := clean(m[1])
+			if len(out) > 0 {
+				out[len(out)-1].GateHint = hint
+			}
+			if clause >= 0 && out[clause].GateHint == "" {
+				out[clause].GateHint = hint
+			}
 			continue
 		}
+
+		if m := reClause.FindStringSubmatch(line); m != nil {
+			body := clean(m[2])
+			id := fmt.Sprintf("%s-%s", base, strings.TrimSuffix(m[1], "."))
+			blk := block(lines, fenced, i)
+			why, ok := clauseHolds(body, blk)
+			if !ok {
+				skipped = append(skipped, Skipped{
+					ID: id, Source: source, File: rel, Line: n, Statement: body, Why: why,
+				})
+				clause = -1
+				continue
+			}
+			out = append(out, model.Rule{
+				ID: id, Source: source, File: rel, Line: n,
+				Statement: body, Severity: clauseSeverity(body, blk),
+			})
+			clause = len(out) - 1
+			continue
+		}
+
+		// A heading closes whatever block was open.
+		if reHeading.MatchString(line) {
+			clause = -1
+		}
+
 		stmt, id, ok := candidate(line, base, &seq)
 		if !ok {
 			continue
 		}
 		out = append(out, model.Rule{
-			ID:        id,
-			Source:    fmt.Sprintf("%s:%d", rel, n),
-			File:      rel,
-			Line:      n,
-			Statement: stmt,
-			Severity:  severityOf(stmt),
+			ID: id, Source: source, File: rel, Line: n,
+			Statement: stmt, Severity: severityOf(stmt),
 		})
 	}
-	return out, sc.Err()
+	return out, skipped, nil
 }
 
-// candidate decides whether a line states a rule, and returns its statement and id.
-func candidate(line, base string, seq *int) (stmt, id string, ok bool) {
-	if m := reClause.FindStringSubmatch(line); m != nil {
-		body := clean(m[2])
-		if len(body) < 12 || !hasModal(body) && !looksNormative(body) {
-			return "", "", false
+// read slurps a document and marks the lines inside fenced code blocks, which
+// state nothing: a sample showing what NOT to do is full of modals.
+func read(r io.Reader) (lines []string, fenced []bool, err error) {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	in := false
+	for sc.Scan() {
+		line := sc.Text()
+		if reFence.MatchString(line) {
+			in = !in
+			lines, fenced = append(lines, line), append(fenced, true)
+			continue
 		}
-		return body, fmt.Sprintf("%s-%s", base, strings.TrimSuffix(m[1], ".")), true
+		lines, fenced = append(lines, line), append(fenced, in)
 	}
+	return lines, fenced, sc.Err()
+}
+
+// block is the text a numbered clause owns: everything from the line after it
+// until the next numbered clause or heading. A rule is often written as a
+// declarative headline with the obligation in the subsection beneath it, and
+// judging the headline alone drops the clause and the whole subsection with it.
+func block(lines []string, fenced []bool, start int) []string {
+	var out []string
+	for i := start + 1; i < len(lines); i++ {
+		if fenced[i] {
+			continue
+		}
+		if reClause.MatchString(lines[i]) || reHeading.MatchString(lines[i]) {
+			break
+		}
+		out = append(out, lines[i])
+	}
+	return out
+}
+
+// clauseHolds decides whether a numbered clause states a rule, reading the whole
+// block rather than the first line, and returns why when it does not.
+func clauseHolds(body string, blk []string) (why string, ok bool) {
+	if len(body) < 12 {
+		return "too short to be a statement", false
+	}
+	if hasModal(body) || looksNormative(body) {
+		return "", true
+	}
+	// A document that names a gate for a clause has already said it is a rule.
+	// That is a stronger signal than any modal, and it is the repository's own
+	// word rather than the scanner's inference.
+	for _, l := range blk {
+		if reGate.MatchString(l) {
+			return "", true
+		}
+	}
+	for _, l := range blk {
+		c := clean(l)
+		if hasModal(c) || looksNormative(c) {
+			return "", true
+		}
+	}
+	return "no obligation in the clause or in the text beneath it", false
+}
+
+// clauseSeverity reads the headline first and falls back to the block, so a
+// clause whose obligation lives beneath its headline is not graded as unknown.
+func clauseSeverity(body string, blk []string) model.Severity {
+	if sev := severityOf(body); sev != model.Unknown {
+		return sev
+	}
+	return severityOf(clean(strings.Join(blk, " ")))
+}
+
+// candidate decides whether a bullet or heading states a rule, and returns its
+// statement and id. Numbered clauses are judged separately, against their whole
+// block rather than one line.
+func candidate(line, base string, seq *int) (stmt, id string, ok bool) {
 	if m := reBullet.FindStringSubmatch(line); m != nil {
 		body := clean(m[1])
 		if len(body) < 12 || !hasModal(body) {

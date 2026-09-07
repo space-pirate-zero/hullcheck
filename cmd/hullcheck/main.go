@@ -27,6 +27,7 @@ import (
 	"github.com/space-pirate-zero/hullcheck/internal/provenance"
 	"github.com/space-pirate-zero/hullcheck/internal/refusal"
 	"github.com/space-pirate-zero/hullcheck/internal/report"
+	"github.com/space-pirate-zero/hullcheck/internal/rules"
 	"github.com/space-pirate-zero/hullcheck/internal/scan"
 	"github.com/space-pirate-zero/hullcheck/internal/scratch"
 	"github.com/space-pirate-zero/hullcheck/internal/verify"
@@ -52,6 +53,7 @@ flags:
   --verify          prove each declared gate fails when its rule is broken
   --since REF       show how coverage moved from REF to now (repeatable trend)
   --paths           which top-level trees have gates, and which have none
+  --clauses         numbered clauses that were seen and not counted, and why
   --owners          gates with one owner or none, from CODEOWNERS
   --badge           write a self-contained SVG coverage badge to stdout
   --refusals        prove your unattended tools stop when they claim to
@@ -98,6 +100,7 @@ func execute(args []string, stdout, stderr io.Writer) int {
 		doVerify  = fs.Bool("verify", false, "prove declared gates actually fail")
 		since     = fs.String("since", "", "show how coverage moved from this ref")
 		showPaths = fs.Bool("paths", false, "gate density per top-level tree")
+		showCl    = fs.Bool("clauses", false, "numbered clauses seen and not counted")
 		showOwn   = fs.Bool("owners", false, "gates with one owner or none")
 		badge     = fs.Bool("badge", false, "write an SVG coverage badge to stdout")
 		doRefuse  = fs.Bool("refusals", false, "prove declared refusals")
@@ -134,6 +137,10 @@ func execute(args []string, stdout, stderr io.Writer) int {
 
 	if *planOnly {
 		return planMode(root, sopt, stdout, stderr)
+	}
+
+	if *showCl {
+		return clauseMode(root, stdout, stderr)
 	}
 
 	if *since != "" {
@@ -574,4 +581,41 @@ func refusedTooLarge(stderr io.Writer, err error) bool {
 		"    --scratch-dir /volume/with/room      copy somewhere with space\n",
 		big)
 	return true
+}
+
+// clauseMode makes the denominator auditable. "36 rules found in 4 policy
+// documents" reads like a measurement, and a reader has no way to check it - the
+// clauses discovery declined are exactly the ones they cannot see.
+func clauseMode(root string, stdout, stderr io.Writer) int {
+	rs, docs, skipped, err := rules.DiscoverAll(root)
+	if err != nil {
+		fmt.Fprintf(stderr, "hullcheck: %v\n", err)
+		return 2
+	}
+	if len(docs) == 0 {
+		fmt.Fprintf(stderr, "hullcheck: UNKNOWN\n\n  %v\n", scan.ErrNoPolicy)
+		return 2
+	}
+	fmt.Fprintf(stdout, "HULLCHECK clauses\n\n"+
+		"  %d rule(s) counted across %d policy document%s\n"+
+		"  %d numbered clause(s) seen and not counted\n\n",
+		len(rs), len(docs), plural(len(docs)), len(skipped))
+	if len(skipped) == 0 {
+		fmt.Fprint(stdout, "  Every numbered clause in these documents is in the denominator.\n")
+		return 0
+	}
+	for _, s := range skipped {
+		fmt.Fprintf(stdout, "  %-18s %s\n    %s\n    %s\n\n",
+			s.ID, s.Source, truncate(s.Statement, 68), s.Why)
+	}
+	fmt.Fprint(stdout, "  A clause counted nowhere is a rule nobody is measuring.\n"+
+		"  Give it an obligation, or a Gate: line, and it joins the denominator.\n")
+	return 0
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }
