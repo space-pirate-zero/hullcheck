@@ -216,3 +216,34 @@ func TestNeedsGitParsesOnGatesAndRefusals(t *testing.T) {
 		t.Errorf("refusal needs_git was not read: %+v", f.Refusals[0])
 	}
 }
+
+func TestEnvAndUnsetEnvParse(t *testing.T) {
+	f, err := Parse(strings.NewReader("version: 1\nrefusals:\n  - tool: t\n    run: \"./t\"\n" +
+		"    env: { PATH: \"/usr/bin:/bin\", TOKEN: \"\" }\n" +
+		"    unset_env: [GOOGLE_APPLICATION_CREDENTIALS, AWS_PROFILE]\n    expect_exit: 1\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := f.Refusals[0]
+	if r.Env["PATH"] != "/usr/bin:/bin" {
+		t.Errorf("a quoted value must keep its colons: %q", r.Env["PATH"])
+	}
+	if v, ok := r.Env["TOKEN"]; !ok || v != "" {
+		t.Errorf("present-but-empty must survive as its own condition: %q %v", v, ok)
+	}
+	if len(r.UnsetEnv) != 2 || r.UnsetEnv[0] != "GOOGLE_APPLICATION_CREDENTIALS" {
+		t.Errorf("unset_env = %v", r.UnsetEnv)
+	}
+}
+
+func TestBadEnvIsRefusedNotGuessed(t *testing.T) {
+	for name, in := range map[string]string{
+		"not a mapping": "version: 1\nrefusals:\n  - tool: t\n    env: PATH=/bin\n",
+		"no value":      "version: 1\nrefusals:\n  - tool: t\n    env: { PATH }\n",
+		"empty name":    "version: 1\nrefusals:\n  - tool: t\n    env: { : x }\n",
+	} {
+		if _, err := Parse(strings.NewReader(in)); err == nil {
+			t.Errorf("%s: expected an error", name)
+		}
+	}
+}

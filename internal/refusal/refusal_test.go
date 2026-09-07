@@ -281,3 +281,75 @@ func TestNeedsGitInADirectoryThatIsNotARepositoryIsStillUnprovable(t *testing.T)
 		t.Errorf("the verdict must say why needs_git did not help: %q", res[0].Why)
 	}
 }
+
+// Issue #7: the conditions unattended tools actually refuse on are mostly
+// environmental, and none of them can be created by writing a file in a copy.
+func TestARefusalOnAMissingVariableIsProvable(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "upload.sh"),
+		[]byte("#!/bin/sh\n[ -n \"$HC_TOKEN\" ] || { echo no credential; exit 2; }\necho uploaded\n"),
+		0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HC_TOKEN", "present")
+
+	res, err := Audit(&manifest.File{Refusals: []manifest.Refusal{{
+		Tool: "uploader", When: "the credential is absent", Run: "sh upload.sh",
+		UnsetEnv: []string{"HC_TOKEN"}, ExpectExit: 2, ExpectOutput: "no credential",
+	}}}, model.Report{}, Options{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res[0].Verdict != Refuses {
+		t.Fatalf("verdict = %q (%s), want REFUSES", res[0].Verdict, res[0].Why)
+	}
+	if !strings.Contains(res[0].Why, "HC_TOKEN unset") {
+		t.Errorf("the verdict must say which environment change proved it: %q", res[0].Why)
+	}
+}
+
+// The control has to run in the environment the tool normally sees, or "it worked
+// normally, then stopped in the declared way" stops meaning anything.
+func TestTheControlRunsInTheUnmodifiedEnvironment(t *testing.T) {
+	root := t.TempDir()
+	// Succeeds only when HC_TOKEN is set, so a control that inherited the
+	// treatment's environment would fail and the audit would say BROKEN.
+	if err := os.WriteFile(filepath.Join(root, "t.sh"),
+		[]byte("#!/bin/sh\n[ -n \"$HC_TOKEN\" ] || { echo no credential; exit 2; }\necho ok\n"),
+		0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HC_TOKEN", "present")
+	res, err := Audit(&manifest.File{Refusals: []manifest.Refusal{{
+		Tool: "t", When: "the credential is absent", Run: "sh t.sh",
+		UnsetEnv: []string{"HC_TOKEN"}, ExpectExit: 2, ExpectOutput: "no credential",
+	}}}, model.Report{}, Options{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res[0].Verdict == Broken {
+		t.Fatalf("the control leaked the treatment's environment: %s", res[0].Why)
+	}
+}
+
+// A replaced PATH is how "the binary is missing" is expressed, and a tool that
+// carries on regardless is still the finding worth having.
+func TestAToolThatIgnoresTheEnvironmentStillProceeds(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "t.sh"),
+		[]byte("#!/bin/sh\necho carried on anyway\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Run it directly rather than through "sh t.sh": with PATH replaced, the
+	// interpreter would not be found and exit 127 is not a considered refusal.
+	res, err := Audit(&manifest.File{Refusals: []manifest.Refusal{{
+		Tool: "t", When: "the helper is not on PATH", Run: "./t.sh",
+		Env: map[string]string{"PATH": "/nonexistent"}, ExpectExit: 1,
+	}}}, model.Report{}, Options{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res[0].Verdict != Proceeds {
+		t.Fatalf("verdict = %q, want PROCEEDS", res[0].Verdict)
+	}
+}

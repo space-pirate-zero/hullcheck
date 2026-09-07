@@ -135,6 +135,11 @@ func prove(r manifest.Refusal, opt Options) (Result, error) {
 	}
 	defer ctl.Close()
 
+	// The environment change belongs to the treatment only. The control has to
+	// run in the environment the tool normally sees, or "it worked normally,
+	// then stopped in the declared way" stops meaning anything.
+	env := scratch.Env{Set: r.Env, Unset: r.UnsetEnv}
+
 	// A condition that turns on a git fact cannot exist in a copy with no .git.
 	// Read that off the copy rather than off the flag: a directory that is not a
 	// git work tree has no .git to carry, so needs_git changes nothing there and
@@ -184,7 +189,7 @@ func prove(r manifest.Refusal, opt Options) (Result, error) {
 			return Result{}, werr
 		}
 	}
-	got, err := dir.Run(r.Run, opt.Timeout)
+	got, err := dir.RunWith(r.Run, opt.Timeout, env)
 	if err != nil {
 		return Result{}, err
 	}
@@ -212,8 +217,12 @@ func prove(r manifest.Refusal, opt Options) (Result, error) {
 			"exit %d matched but it never said %q, so it may have failed for another reason",
 			got.Exit, r.ExpectOutput)}, nil
 	}
+	how := ""
+	if !env.Empty() {
+		how = fmt.Sprintf(" (with %s)", env.Describe())
+	}
 	return Result{r.Tool, r.When, Refuses, fmt.Sprintf(
-		"proven: worked normally, then stopped with exit %d and said so", got.Exit)}, nil
+		"proven: worked normally, then stopped with exit %d and said so%s", got.Exit, how)}, nil
 }
 
 // A note on what this audit deliberately does NOT report.
