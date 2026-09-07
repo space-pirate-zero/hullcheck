@@ -120,6 +120,10 @@ type Rule struct {
 	// GateHint is an explicit gate named by the rule itself, e.g. a
 	// "Gate: make preflight" annotation. Strongest possible match signal.
 	GateHint string `json:"gate_hint,omitempty"`
+	// Clause is true for a numbered clause, as opposed to a bullet or heading
+	// that carries an obligation. It is what lets the counted and the skipped
+	// clauses be added up and checked against the document.
+	Clause bool `json:"clause,omitempty"`
 }
 
 // Key is the identity of a rule: its clause id, qualified by the document it was

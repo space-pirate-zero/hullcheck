@@ -122,6 +122,44 @@ go install github.com/space-pirate-zero/hullcheck/cmd/hullcheck@latest
 hullcheck .
 ```
 
+## What counts as a rule
+
+A numbered clause is judged by its **whole block** — the clause line and everything
+under it up to the next clause or heading — not by its first line. A rule written as
+a declarative headline with the obligation in the bullets beneath it is a common
+style, and judging the headline alone dropped the clause and its whole subsection:
+
+```markdown
+8.8 **Skills are living operator docs — every render updates them.**
+
+  - The owning skill must be updated in the same PR as the render.
+
+*Gate: make check-skills*
+```
+
+An explicit `Gate:` line inside the block is sufficient on its own. If the document
+names a gate for a clause, the document has already said it is a rule, and that is
+the repository's own word rather than the scanner's inference.
+
+Fenced code blocks state nothing — a sample showing what *not* to do is full of
+modals — so they never grant an obligation.
+
+The clauses that were seen and not counted are printable, so the denominator can be
+checked rather than believed:
+
+```sh
+hullcheck --clauses .
+```
+
+```
+  15 rule(s) counted across 2 policy documents
+  1 numbered clause(s) seen and not counted
+
+  RULES-8.7          RULES.md:20
+    Overview of the section that follows.
+    no obligation in the clause or in the text beneath it
+```
+
 ## Turning the reading into a score
 
 The default run is a *reading*: it matched rules to gates by name and reference. To

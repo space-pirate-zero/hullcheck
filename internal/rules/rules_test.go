@@ -168,3 +168,134 @@ func TestEmptyRepoYieldsNothingNotAnError(t *testing.T) {
 		t.Fatalf("expected an empty reading, got %d rules / %d docs", len(rs), len(docs))
 	}
 }
+
+// Issue #4: a rule written as a declarative headline with the obligation in the
+// block beneath it was invisible, and the whole subsection went with it.
+func TestClauseIsJudgedByItsWholeBlock(t *testing.T) {
+	root := t.TempDir()
+	doc := "# Section 8\n\n" +
+		"8.8 **Skills are living operator docs — every render updates them.**\n\n" +
+		"  - The owning skill must be updated in the same PR as the render.\n\n" +
+		"8.0a **Two independent studios, one repo.**\n\n" +
+		"  Each studio owns its pipeline and must never reach into the other's tree.\n\n" +
+		"8.7 Overview of the section that follows.\n"
+	if err := os.WriteFile(filepath.Join(root, "RULES.md"), []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rs, _, skipped, err := DiscoverAll(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]model.Rule{}
+	for _, r := range rs {
+		got[r.ID] = r
+	}
+	for _, id := range []string{"RULES-8.8", "RULES-8.0a"} {
+		if _, ok := got[id]; !ok {
+			t.Errorf("%s has its obligation beneath its headline and must be counted; got %v", id, keys(rs))
+		}
+	}
+	// Severity comes from the block when the headline carries no modal.
+	if s := got["RULES-8.0a"].Severity; s != model.High {
+		t.Errorf("severity = %q, want high from the block's \"must never\"", s)
+	}
+	// A clause with no obligation anywhere is still declined, and said so.
+	if _, ok := got["RULES-8.7"]; ok {
+		t.Error("a clause with no obligation in it or beneath it must not be counted")
+	}
+	if len(skipped) != 1 || skipped[0].ID != "RULES-8.7" {
+		t.Fatalf("the skip must be reported, got %+v", skipped)
+	}
+	if skipped[0].Why == "" || skipped[0].Line == 0 {
+		t.Errorf("a skip must carry a reason and a line: %+v", skipped[0])
+	}
+}
+
+// A document that names a gate for a clause has already said it is a rule. That
+// is the repository's own word, and stronger than any modal.
+func TestAGateLineAloneMakesAClauseARule(t *testing.T) {
+	root := t.TempDir()
+	doc := "9.1 The palette is void, pink and cyan.\n\n*Gate: make brand*\n"
+	if err := os.WriteFile(filepath.Join(root, "RULES.md"), []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rs, _, _, err := DiscoverAll(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rs) != 1 || rs[0].ID != "RULES-9.1" {
+		t.Fatalf("a clause naming its gate must be counted, got %v", keys(rs))
+	}
+	if rs[0].GateHint != "make brand" {
+		t.Errorf("gate hint = %q, want it bound to the clause that owns the block", rs[0].GateHint)
+	}
+}
+
+// The block stops at the next clause, so one clause's obligation cannot make its
+// unrelated neighbour above it look normative.
+func TestABlockStopsAtTheNextClause(t *testing.T) {
+	root := t.TempDir()
+	doc := "3.1 A summary line with no obligation at all here.\n\n" +
+		"3.2 Every asset must record its provenance.\n"
+	if err := os.WriteFile(filepath.Join(root, "RULES.md"), []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rs, _, skipped, err := DiscoverAll(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rs) != 1 || rs[0].ID != "RULES-3.2" {
+		t.Fatalf("3.1 must not borrow 3.2's modal, got %v", keys(rs))
+	}
+	if len(skipped) != 1 || skipped[0].ID != "RULES-3.1" {
+		t.Fatalf("skipped = %+v", skipped)
+	}
+}
+
+// A fenced sample showing what NOT to do is full of modals and states nothing.
+func TestAFencedBlockGrantsNoObligation(t *testing.T) {
+	root := t.TempDir()
+	doc := "4.1 An example of the wrong way to write this.\n\n" +
+		"```\nyou must never do this\n```\n"
+	if err := os.WriteFile(filepath.Join(root, "RULES.md"), []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rs, _, _, err := DiscoverAll(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rs) != 0 {
+		t.Errorf("a fenced sample must not make a clause a rule, got %v", keys(rs))
+	}
+}
+
+func keys(rs []model.Rule) []string {
+	var out []string
+	for _, r := range rs {
+		out = append(out, r.ID)
+	}
+	return out
+}
+
+// A Gate: line is the repository's own word that a clause is a rule, so it wins
+// over the length guard, which exists to filter clauses nobody has vouched for.
+func TestAGateLineBeatsTheLengthGuard(t *testing.T) {
+	root := t.TempDir()
+	doc := "3.1 Palette.\n\n*Gate: make brand*\n\n3.2 Summary.\n"
+	if err := os.WriteFile(filepath.Join(root, "RULES.md"), []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rs, _, skipped, err := DiscoverAll(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rs) != 1 || rs[0].ID != "RULES-3.1" {
+		t.Fatalf("a short clause that names its gate must be counted, got %v", keys(rs))
+	}
+	if !rs[0].Clause {
+		t.Error("a numbered clause must be marked as one, so the counts can be audited")
+	}
+	if len(skipped) != 1 || skipped[0].ID != "RULES-3.2" {
+		t.Fatalf("a short clause with no gate is still declined, got %+v", skipped)
+	}
+}
