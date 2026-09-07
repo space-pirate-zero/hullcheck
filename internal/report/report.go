@@ -144,7 +144,7 @@ func Text(w io.Writer, r model.Report, verified bool) {
 	if loud := loudest(r, 3); len(loud) > 0 {
 		fmt.Fprintf(w, "\n  Your loudest silences    %-8s %-13s %s\n", "severity", "ungoverned", "rule")
 		for _, f := range loud {
-			since := r.Since[f.Rule.ID]
+			since := r.Since[f.Rule.Key()]
 			if since == "" {
 				since = "-"
 			}

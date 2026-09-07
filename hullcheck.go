@@ -27,7 +27,12 @@ const (
 
 // Finding is one rule and how it fared.
 type Finding struct {
-	RuleID    string
+	RuleID string
+	// Key is RuleID qualified by the document the rule was read from. Ids come
+	// from the clause number and the document's basename, so a repository with
+	// two RULES.md files states two different rules called RULES-5.3; Key is
+	// what tells them apart.
+	Key       string
 	Statement string
 	Source    string
 	Severity  string
@@ -84,7 +89,8 @@ func Read(dir string) (Report, error) {
 	}
 	for _, f := range rep.Findings {
 		out.Findings = append(out.Findings, Finding{
-			RuleID: f.Rule.ID, Statement: f.Rule.Statement, Source: f.Rule.Source,
+			RuleID: f.Rule.ID, Key: f.Rule.Key(),
+			Statement: f.Rule.Statement, Source: f.Rule.Source,
 			Severity: string(f.Rule.Severity), Verdict: string(f.Verdict),
 			Stage: string(f.Stage()), Why: f.Why,
 		})
@@ -122,6 +128,9 @@ func AssertCoverage(t TestingT, dir string, minPercent float64) Report {
 
 // AssertNoNewBreaches fails if any rule outside allowed is unenforced. Use it to
 // ratchet: a repository can carry known gaps without letting new ones in.
+//
+// An entry in allowed may be a bare rule id, or a Finding.Key ("RULES.md#R-1.2")
+// where two policy documents share a basename and a bare id would waive both.
 func AssertNoNewBreaches(t TestingT, dir string, allowed ...string) Report {
 	t.Helper()
 	skip := make(map[string]bool, len(allowed))
@@ -135,7 +144,7 @@ func AssertNoNewBreaches(t TestingT, dir string, allowed ...string) Report {
 	}
 	var fresh []Finding
 	for _, f := range rep.Breaches() {
-		if !skip[f.RuleID] {
+		if !skip[f.RuleID] && !skip[f.Key] {
 			fresh = append(fresh, f)
 		}
 	}

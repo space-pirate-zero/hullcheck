@@ -118,3 +118,83 @@ func TestMissingFileIsNotAnError(t *testing.T) {
 		t.Fatalf("missing manifest must mean unverified mode, got (%v,%v,%v)", f, found, err)
 	}
 }
+
+// Issue #2: two entries that address the same rule cannot both be right, and
+// letting the second win silently is how one declaration flips a rule its author
+// never read.
+func TestDuplicateDeclarationsAreRefused(t *testing.T) {
+	for name, in := range map[string]string{
+		"same source and id": "version: 1\nrules:\n" +
+			"  - id: R-1.1\n    source: RULES.md\n" +
+			"  - id: R-1.1\n    source: RULES.md\n",
+		"both unqualified": "version: 1\nrules:\n" +
+			"  - id: R-1.1\n" +
+			"  - id: R-1.1\n",
+		"line numbers differ, document does not": "version: 1\nrules:\n" +
+			"  - id: R-1.1\n    source: RULES.md:12\n" +
+			"  - id: R-1.1\n    source: RULES.md:98\n",
+	} {
+		if _, err := Parse(strings.NewReader(in)); err == nil {
+			t.Errorf("%s: expected a refusal, got none", name)
+		}
+	}
+}
+
+// The same id in two different documents is not a duplicate: it is what the
+// naming scheme produces, and `source:` is what tells them apart.
+func TestSameIDInDifferentDocumentsIsAllowed(t *testing.T) {
+	f, err := Parse(strings.NewReader("version: 1\nrules:\n" +
+		"  - id: R-5.3\n    source: RULES.md\n" +
+		"  - id: R-5.3\n    source: second-brand/RULES.md\n"))
+	if err != nil {
+		t.Fatalf("two documents, two rules, one id: %v", err)
+	}
+	if len(f.Rules) != 2 {
+		t.Fatalf("got %d rules, want 2", len(f.Rules))
+	}
+	if f.Rules[0].Key() == f.Rules[1].Key() {
+		t.Errorf("both rules share the key %q", f.Rules[0].Key())
+	}
+}
+
+func TestSourceFileDropsTheLineNumber(t *testing.T) {
+	for in, want := range map[string]string{
+		"RULES.md:230": "RULES.md", "RULES.md": "RULES.md",
+		"a/b/RULES.md:1": "a/b/RULES.md", "": "",
+		// A colon that is not a line number is part of the path.
+		"weird:name.md": "weird:name.md",
+	} {
+		if got := (Rule{Source: in}).SourceFile(); got != want {
+			t.Errorf("SourceFile(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// A generated manifest is where people start editing, so it has to warn about the
+// one thing that will silently bite them.
+func TestPrintWarnsAboutIDsSharedBetweenDocuments(t *testing.T) {
+	rep := model.Report{Findings: []model.Finding{
+		{Rule: model.Rule{ID: "RULES-5.3", File: "RULES.md", Source: "RULES.md:230"}},
+		{Rule: model.Rule{ID: "RULES-5.3", File: "other/RULES.md", Source: "other/RULES.md:81"}},
+	}}
+	var sb strings.Builder
+	if err := Print(&sb, rep); err != nil {
+		t.Fatal(err)
+	}
+	out := sb.String()
+	if !strings.Contains(out, "more than one policy document") || !strings.Contains(out, "RULES-5.3") {
+		t.Errorf("the generated manifest must name the shared id:\n%s", out)
+	}
+	// The source must be the document, not "document:line": a line number moves
+	// on every edit and would break the declaration it is meant to anchor.
+	if strings.Contains(out, "source: RULES.md:230") {
+		t.Errorf("source must not carry a line number:\n%s", out)
+	}
+	if !strings.Contains(out, "source: RULES.md\n") || !strings.Contains(out, "source: other/RULES.md\n") {
+		t.Errorf("each entry must name its own document:\n%s", out)
+	}
+	// And what it prints must parse, including the two same-id entries.
+	if _, err := Parse(strings.NewReader(out)); err != nil {
+		t.Errorf("a generated manifest must parse: %v", err)
+	}
+}

@@ -248,3 +248,73 @@ func TestZeroRemovesTheCopyLimits(t *testing.T) {
 		t.Errorf("--max-files 1 should refuse: exit = %d\n%s", code, errOut)
 	}
 }
+
+// Issue #2, end to end: two policy documents with the same basename state two
+// different rules with the same id. A manifest entry naming one document must
+// not flip the other.
+func TestDeclarationDoesNotReachIntoAnotherDocument(t *testing.T) {
+	root := repo(t, map[string]string{
+		// Both documents mention provenance, so the matcher credits the same
+		// gate to both and both read HOLD before verification.
+		"RULES.md":              "5.3 Every asset must record its provenance.\n",
+		"second-brand/RULES.md": "5.3 Provenance must never be dropped on release.\n",
+		"check_provenance.sh":   "exit 0\n",
+		// The declaration names one document and declares no gate, so it flips
+		// exactly one of them to BREACH.
+		".hullcheck.yml": "version: 1\nrules:\n  - id: RULES-5.3\n" +
+			"    source: RULES.md\n    statement: \"probe\"\n",
+	})
+	code, out, _ := run(t, "--no-banner", "--json", "--verify", root)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0\n%s", code, out)
+	}
+	var rep struct {
+		Findings []struct {
+			Rule struct {
+				ID   string `json:"id"`
+				File string `json:"file"`
+			} `json:"rule"`
+			Verdict string `json:"verdict"`
+			Why     string `json:"why"`
+		} `json:"findings"`
+	}
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if len(rep.Findings) != 2 {
+		t.Fatalf("got %d findings, want 2: %+v", len(rep.Findings), rep.Findings)
+	}
+	for _, f := range rep.Findings {
+		switch f.Rule.File {
+		case "RULES.md":
+			if f.Verdict != "BREACH" {
+				t.Errorf("the declared rule should carry the declaration's verdict, got %s", f.Verdict)
+			}
+		case "second-brand/RULES.md":
+			if f.Verdict != "HOLD" {
+				t.Errorf("a rule in another document was flipped by a declaration "+
+					"that never mentioned it: %+v", f)
+			}
+		default:
+			t.Errorf("unexpected document %q", f.Rule.File)
+		}
+	}
+}
+
+// An unqualified declaration where the id is ambiguous changes nothing, and says
+// so on stderr rather than picking one.
+func TestAmbiguousDeclarationIsReportedNotGuessed(t *testing.T) {
+	root := repo(t, map[string]string{
+		"RULES.md":       "5.3 Every asset must record its provenance.\n",
+		"other/RULES.md": "5.3 Releases must never ship without a changelog.\n",
+		".hullcheck.yml": "version: 1\nrules:\n  - id: RULES-5.3\n" +
+			"    statement: \"probe\"\n    gate:\n      kind: command\n      run: \"true\"\n",
+	})
+	code, _, errOut := run(t, "--no-banner", "--verify", root)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0\n%s", code, errOut)
+	}
+	if !strings.Contains(errOut, "RULES-5.3") || !strings.Contains(errOut, "source:") {
+		t.Errorf("the ambiguity must be reported:\n%s", errOut)
+	}
+}

@@ -141,6 +141,28 @@ experiment and a hopeful guess, and it is what makes `FAKE` and `BROKEN` trustwo
 Your repository is never modified: fixtures are applied to a temp copy that is
 removed afterwards.
 
+### `source:` is half a rule's name
+
+A rule id is the clause number plus the document's basename, so a repository with
+more than one `RULES.md` states two different rules called `RULES-5.3`. `source:`
+is what tells them apart, and `--verify` addresses a rule by document **and** id:
+
+```yaml
+  - id: RULES-5.3
+    source: RULES.md              # not second-brand/RULES.md
+```
+
+A declaration that omits `source:` still works where the id is unique. Where it is
+not, nothing is changed and hullcheck says so, rather than picking one:
+
+```
+hullcheck: RULES-5.3: 2 rules in this repository carry that id and the
+declaration names no source:, so none of them was changed
+```
+
+Two entries that address the same rule are refused when the manifest loads, and
+`--print-manifest` marks any id it emitted more than once.
+
 ### What gets copied, and what stops it
 
 A verify pass copies the repository once per rule, and a refusal audit twice per

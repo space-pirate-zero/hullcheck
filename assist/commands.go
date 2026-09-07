@@ -223,25 +223,35 @@ func Triage(ctx context.Context, p Provider, rep hullcheck.Report, w io.Writer) 
 	if err != nil {
 		return err
 	}
-	byID := map[string]hullcheck.Finding{}
-	for _, f := range breaches {
-		byID[f.RuleID] = f
+	// Two policy documents sharing a basename state different rules with the
+	// same id, so an id maps to a list, not to one finding. Keying it as one
+	// would drop a rule from the output entirely: the first would be ranked
+	// under the shared id and the second would then look already-printed.
+	pending := map[string][]int{}
+	for i, f := range breaches {
+		pending[f.RuleID] = append(pending[f.RuleID], i)
 	}
+	printed := make([]bool, len(breaches))
 	fmt.Fprintf(w, "# Fix in this order, worst blast radius first. Ranked by %s;\n"+
 		"# the severities beside each line are your repository's own.\n\n", p.String())
 	n := 0
+	show := func(f hullcheck.Finding, suffix string) {
+		n++
+		fmt.Fprintf(w, "  %d. %-18s %-7s %s%s\n", n, f.RuleID, f.Severity, f.Statement, suffix)
+	}
 	for _, l := range strings.Split(reply, "\n") {
 		id := strings.TrimSpace(strings.TrimLeft(l, "-*0123456789. "))
-		if f, ok := byID[id]; ok {
-			n++
-			fmt.Fprintf(w, "  %d. %-18s %-7s %s\n", n, f.RuleID, f.Severity, f.Statement)
-			delete(byID, id)
+		idxs := pending[id]
+		if len(idxs) == 0 {
+			continue
 		}
+		pending[id] = idxs[1:]
+		printed[idxs[0]] = true
+		show(breaches[idxs[0]], "")
 	}
-	for _, f := range breaches {
-		if _, still := byID[f.RuleID]; still {
-			n++
-			fmt.Fprintf(w, "  %d. %-18s %-7s %s   (unranked)\n", n, f.RuleID, f.Severity, f.Statement)
+	for i, f := range breaches {
+		if !printed[i] {
+			show(f, "   (unranked)")
 		}
 	}
 	return nil

@@ -157,10 +157,13 @@ func Diff(root, base string) (added []model.Finding, rep model.Report, err error
 	if err != nil && !errors.Is(err, scan.ErrNoPolicy) {
 		return nil, model.Report{}, err
 	}
+	// Keyed by document and id together: an id alone is shared between policy
+	// documents with the same basename, so a pre-existing breach in one would
+	// hide a brand-new one in another.
 	known := map[string]bool{}
 	for _, f := range baseRep.Findings {
 		if f.Verdict == model.Breach {
-			known[f.Rule.ID] = true
+			known[f.Rule.Key()] = true
 		}
 	}
 	rep, err = scan.Run(root)
@@ -168,7 +171,7 @@ func Diff(root, base string) (added []model.Finding, rep model.Report, err error
 		return nil, model.Report{}, err
 	}
 	for _, f := range rep.Findings {
-		if f.Verdict == model.Breach && !known[f.Rule.ID] {
+		if f.Verdict == model.Breach && !known[f.Rule.Key()] {
 			added = append(added, f)
 		}
 	}
@@ -193,6 +196,10 @@ func git(root string, args ...string) (string, error) {
 // 2019, and the difference is not visible in a coverage percentage.
 type Since struct {
 	RuleID string `json:"rule_id"`
+	// Key is RuleID qualified by the document it was read from. Two policy
+	// documents sharing a basename state different rules with the same id, and
+	// dating one of them by the other's commit is worse than not dating it.
+	Key    string `json:"rule_key"`
 	Commit string `json:"commit"`
 	Date   string `json:"date"`
 	Tag    string `json:"tag,omitempty"`
@@ -212,7 +219,7 @@ func Ungoverned(root string, rep model.Report) []Since {
 		if !ok {
 			continue
 		}
-		s.RuleID = f.Rule.ID
+		s.RuleID, s.Key = f.Rule.ID, f.Rule.Key()
 		out = append(out, s)
 	}
 	return out

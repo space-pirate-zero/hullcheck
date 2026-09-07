@@ -167,9 +167,67 @@ func TestApplyFoldsResultsIntoTheReading(t *testing.T) {
 	rep := model.Report{Findings: []model.Finding{
 		{Rule: model.Rule{ID: "R-1"}, Verdict: model.Hold},
 	}}
-	out := Apply(rep, []Result{{RuleID: "R-1", Verdict: model.Fake, Why: "paint"}})
+	out, warn := Apply(rep, []Result{{RuleID: "R-1", Verdict: model.Fake, Why: "paint"}})
 	if out.Findings[0].Verdict != model.Fake || !out.Verified {
 		t.Fatalf("apply did not fold the proof in: %+v", out)
+	}
+	if len(warn) != 0 {
+		t.Errorf("an unambiguous declaration must not warn: %v", warn)
+	}
+}
+
+// Issue #2: ids are derived from the clause number and the document's basename,
+// so two RULES.md files state two different rules called RULES-5.3. A declaration
+// naming one document must not touch the other.
+func TestApplyAddressesARuleByDocumentAndID(t *testing.T) {
+	rep := model.Report{Findings: []model.Finding{
+		{Rule: model.Rule{ID: "RULES-5.3", File: "RULES.md"}, Verdict: model.Breach},
+		{Rule: model.Rule{ID: "RULES-5.3", File: "second-brand/RULES.md"}, Verdict: model.Breach},
+	}}
+	out, warn := Apply(rep, []Result{{
+		RuleID: "RULES-5.3", Source: "RULES.md", Verdict: model.Hold, Why: "proven",
+	}})
+	if out.Findings[0].Verdict != model.Hold {
+		t.Errorf("the declared rule was not updated: %+v", out.Findings[0])
+	}
+	if out.Findings[1].Verdict != model.Breach {
+		t.Errorf("a rule in another document was flipped by a declaration that never mentioned it: %+v",
+			out.Findings[1])
+	}
+	if len(warn) != 0 {
+		t.Errorf("a qualified declaration must not warn: %v", warn)
+	}
+}
+
+// A declaration with no source: still works where the id is unique.
+func TestApplyHonoursAnUnqualifiedDeclarationWhenTheIDIsUnique(t *testing.T) {
+	rep := model.Report{Findings: []model.Finding{
+		{Rule: model.Rule{ID: "RULES-1.1", File: "RULES.md"}, Verdict: model.Breach},
+	}}
+	out, warn := Apply(rep, []Result{{RuleID: "RULES-1.1", Verdict: model.Hold, Why: "proven"}})
+	if out.Findings[0].Verdict != model.Hold {
+		t.Errorf("an unambiguous id must still match: %+v", out.Findings[0])
+	}
+	if len(warn) != 0 {
+		t.Errorf("unexpected warning: %v", warn)
+	}
+}
+
+// ...and where it is not unique, it changes nothing and says so. Guessing which
+// of two rules was meant is exactly the false link this tool exists to prevent.
+func TestApplyRefusesToGuessBetweenDuplicateIDs(t *testing.T) {
+	rep := model.Report{Findings: []model.Finding{
+		{Rule: model.Rule{ID: "RULES-5.3", File: "RULES.md"}, Verdict: model.Breach},
+		{Rule: model.Rule{ID: "RULES-5.3", File: "other/RULES.md"}, Verdict: model.Breach},
+	}}
+	out, warn := Apply(rep, []Result{{RuleID: "RULES-5.3", Verdict: model.Hold, Why: "proven"}})
+	for i, f := range out.Findings {
+		if f.Verdict != model.Breach {
+			t.Errorf("finding %d was changed on an ambiguous declaration: %+v", i, f)
+		}
+	}
+	if len(warn) != 1 || !strings.Contains(warn[0], "RULES-5.3") {
+		t.Errorf("the ambiguity must be reported, got %v", warn)
 	}
 }
 
@@ -197,4 +255,24 @@ func snapshot(t *testing.T, root string) string {
 		t.Fatal(err)
 	}
 	return sb.String()
+}
+
+// Requiring a source creates a new way to miss - a typo, a moved document - and a
+// declaration that reaches nothing must never be silent.
+func TestApplyReportsADeclarationThatReachedNothing(t *testing.T) {
+	rep := model.Report{Findings: []model.Finding{
+		{Rule: model.Rule{ID: "RULES-1.1", File: "RULES.md"}, Verdict: model.Breach},
+	}}
+	for name, res := range map[string]Result{
+		"source names the wrong document": {RuleID: "RULES-1.1", Source: "docs/RULES.md", Verdict: model.Hold},
+		"id is not in the reading at all": {RuleID: "RULES-9.9", Source: "RULES.md", Verdict: model.Hold},
+	} {
+		out, warn := Apply(rep, []Result{res})
+		if out.Findings[0].Verdict != model.Breach {
+			t.Errorf("%s: an unmatched declaration must change nothing", name)
+		}
+		if len(warn) != 1 || !strings.Contains(warn[0], "changed nothing") {
+			t.Errorf("%s: want a warning, got %v", name, warn)
+		}
+	}
 }
