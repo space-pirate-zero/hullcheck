@@ -257,22 +257,113 @@ func snapshot(t *testing.T, root string) string {
 	return sb.String()
 }
 
-// Requiring a source creates a new way to miss - a typo, a moved document - and a
-// declaration that reaches nothing must never be silent.
-func TestApplyReportsADeclarationThatReachedNothing(t *testing.T) {
+// Issue #3: a declared rule the scanner never produced was verified, logged, and
+// then dropped from the report and from the score. The manifest is authoritative
+// in verified mode, so it joins the reading instead.
+func TestApplyAddsADeclaredRuleDiscoveryDidNotFind(t *testing.T) {
 	rep := model.Report{Findings: []model.Finding{
 		{Rule: model.Rule{ID: "RULES-1.1", File: "RULES.md"}, Verdict: model.Breach},
 	}}
-	for name, res := range map[string]Result{
-		"source names the wrong document": {RuleID: "RULES-1.1", Source: "docs/RULES.md", Verdict: model.Hold},
-		"id is not in the reading at all": {RuleID: "RULES-9.9", Source: "RULES.md", Verdict: model.Hold},
-	} {
-		out, warn := Apply(rep, []Result{res})
-		if out.Findings[0].Verdict != model.Breach {
-			t.Errorf("%s: an unmatched declaration must change nothing", name)
-		}
-		if len(warn) != 1 || !strings.Contains(warn[0], "changed nothing") {
-			t.Errorf("%s: want a warning, got %v", name, warn)
-		}
+	out, warn := Apply(rep, []Result{{
+		RuleID: "RULES-1.6", Source: "RULES.md",
+		Rule: model.Rule{ID: "RULES-1.6", File: "RULES.md", Source: "RULES.md",
+			Statement: "hullcheck must never write to the repository it reads",
+			Severity:  model.High},
+		Verdict: model.Hold, Why: "proven",
+	}})
+	if len(out.Findings) != 2 {
+		t.Fatalf("got %d findings, want the declared rule added: %+v", len(out.Findings), out.Findings)
+	}
+	got := out.Findings[1]
+	if got.Rule.ID != "RULES-1.6" || got.Verdict != model.Hold {
+		t.Errorf("the proven rule did not reach the reading: %+v", got)
+	}
+	if got.Rule.Severity != model.High {
+		t.Errorf("severity = %q, want the declared high", got.Rule.Severity)
+	}
+	if !strings.Contains(got.Why, "the scanner did not find this rule") {
+		t.Errorf("a manifest-only rule must say where it came from: %q", got.Why)
+	}
+	// A proven gate has to move the number, or there is no reason to write
+	// fixtures at all.
+	if out.Coverage() != 0.5 {
+		t.Errorf("coverage = %v, want 0.5 across both rules", out.Coverage())
+	}
+	if len(warn) != 1 || !strings.Contains(warn[0], "discovery did not find") {
+		t.Errorf("the added rules must be announced, got %v", warn)
+	}
+	if len(out.Docs) != 1 || out.Docs[0] != manifest.Name {
+		t.Errorf("the manifest must be listed among the documents, got %v", out.Docs)
+	}
+}
+
+// The one thing it will not do is invent a rule when it cannot tell which of
+// several a declaration meant.
+func TestApplyAddsNothingForAnAmbiguousDeclaration(t *testing.T) {
+	rep := model.Report{Findings: []model.Finding{
+		{Rule: model.Rule{ID: "RULES-5.3", File: "RULES.md"}, Verdict: model.Breach},
+		{Rule: model.Rule{ID: "RULES-5.3", File: "other/RULES.md"}, Verdict: model.Breach},
+	}}
+	out, warn := Apply(rep, []Result{{
+		RuleID:  "RULES-5.3",
+		Rule:    model.Rule{ID: "RULES-5.3", Statement: "probe"},
+		Verdict: model.Hold, Why: "proven",
+	}})
+	if len(out.Findings) != 2 {
+		t.Errorf("an ambiguous declaration must not add a third rule: %+v", out.Findings)
+	}
+	if len(warn) != 1 || !strings.Contains(warn[0], "none was added") {
+		t.Errorf("want an ambiguity warning, got %v", warn)
+	}
+}
+
+// A HOLD with no gate falls into the "never" bucket, which the ladder does not
+// print, so the rows would sum to fewer rules than the HOLD count. A rule added
+// from the manifest carries the gate the manifest declared.
+func TestAnAddedRuleCarriesTheDeclaredGate(t *testing.T) {
+	m := &manifest.File{Version: 1, Rules: []manifest.Rule{{
+		ID: "R-9", Source: "RULES.md", Statement: "x",
+		Gate: &manifest.Gate{Kind: "makefile", Run: "make readonly"},
+	}}}
+	res, err := Run(m, Options{Root: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _ := Apply(model.Report{}, res)
+	if len(out.Findings) != 1 {
+		t.Fatalf("got %d findings, want 1", len(out.Findings))
+	}
+	f := out.Findings[0]
+	if f.Verdict != model.Hold {
+		t.Fatalf("verdict = %q, want HOLD", f.Verdict)
+	}
+	if len(f.Gates) != 1 {
+		t.Fatalf("an added HOLD must carry its declared gate, got %+v", f.Gates)
+	}
+	if f.Gates[0].Run != "make readonly" || f.Gates[0].Kind != model.KindMakefile {
+		t.Errorf("the gate lost what the manifest declared: %+v", f.Gates[0])
+	}
+	// A manifest says what a gate does, never when it runs, so the stage must be
+	// the one with no automatic detection.
+	if f.Stage() != model.Manual {
+		t.Errorf("stage = %q, want manual", f.Stage())
+	}
+}
+
+// A rule declared with no gate at all is a BREACH, and carries no gate.
+func TestAnAddedRuleWithNoGateCarriesNone(t *testing.T) {
+	m := &manifest.File{Version: 1, Rules: []manifest.Rule{{
+		ID: "R-9", Source: "RULES.md", Statement: "x",
+	}}}
+	res, err := Run(m, Options{Root: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _ := Apply(model.Report{}, res)
+	if len(out.Findings) != 1 || out.Findings[0].Verdict != model.Breach {
+		t.Fatalf("want one BREACH, got %+v", out.Findings)
+	}
+	if len(out.Findings[0].Gates) != 0 {
+		t.Errorf("a rule with no declared gate must carry none: %+v", out.Findings[0].Gates)
 	}
 }
