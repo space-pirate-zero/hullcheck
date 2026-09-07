@@ -319,7 +319,7 @@ func fold(lines []string, i, indent int, body string) (string, int, error) {
 		if !chomp {
 			text += "\n"
 		}
-		return rebuild(strconv.Quote(text)), n, nil
+		return rebuild(quote(text)), n, nil
 	}
 	if val != "" {
 		return body, 0, nil
@@ -440,7 +440,7 @@ func readItems(lines []string, i, indent int) ([]string, int, error) {
 		} else {
 			v = strings.Trim(v, "'")
 		}
-		items, n = append(items, strconv.Quote(v)), n+1
+		items, n = append(items, quote(v)), n+1
 	}
 	// Blank lines counted after the last item belong to what follows.
 	return items, trim(lines, i, n), nil
@@ -468,7 +468,7 @@ func readPairs(lines []string, i, indent int) ([]string, int, error) {
 		if !ok {
 			return nil, 0, fmt.Errorf("line %d: expected \"key: value\", got %q", j+1, trimmed)
 		}
-		pairs, n = append(pairs, k+": "+strconv.Quote(v)), n+1
+		pairs, n = append(pairs, k+": "+quote(v)), n+1
 	}
 	return pairs, trim(lines, i, n), nil
 }
@@ -765,6 +765,34 @@ func split(kv string) (key, val string, ok bool) {
 		return key, unescape(val[1 : len(val)-1]), true
 	}
 	return key, val, true
+}
+
+// quote is the inverse of unescape, and only of unescape.
+//
+// strconv.Quote would be the obvious choice and is wrong here: it renders every
+// non-ASCII rune as a \u escape, and unescape does not decode those. A statement
+// folded across lines that contains an em dash - the punctuation this project's
+// own policy documents use - would come back with the escape still in it, and
+// silently.
+func quote(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '\\':
+			b.WriteString(`\\`)
+		case '"':
+			b.WriteString(`\"`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\t':
+			b.WriteString(`\t`)
+		default:
+			b.WriteByte(s[i])
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
 }
 
 // unescape handles the small set of sequences a fixture body needs. Anything else

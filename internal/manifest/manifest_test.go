@@ -405,3 +405,40 @@ func TestPrintStatesTheFormat(t *testing.T) {
 		t.Errorf("and must still parse: %v", err)
 	}
 }
+
+// Policy prose is full of punctuation that is not ASCII, and a value that comes
+// back with an escape still in it is worse than one that is rejected.
+func TestBlockValuesKeepNonASCII(t *testing.T) {
+	f, err := Parse(strings.NewReader("version: 1\nrules:\n  - id: R\n    source: RULES.md\n" +
+		"    statement: >-\n      Skills are living operator docs — every render\n" +
+		"      and every publish “updates” them.\n" +
+		"provenance:\n  - artifacts: a\n    record: r\n" +
+		"    ignore:\n      - \"brand/café/**\"\n" +
+		"refusals:\n  - tool: t\n    run: \"./t\"\n    env:\n      GREETING: \"héllo\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "Skills are living operator docs — every render and every publish “updates” them."
+	if f.Rules[0].Statement != want {
+		t.Errorf("statement = %q\n    want %q", f.Rules[0].Statement, want)
+	}
+	if got := f.Provenance[0].Ignore; len(got) != 1 || got[0] != "brand/café/**" {
+		t.Errorf("ignore = %q", got)
+	}
+	if got := f.Refusals[0].Env["GREETING"]; got != "héllo" {
+		t.Errorf("env value = %q", got)
+	}
+}
+
+// A value carrying the characters the escape set is made of must survive a round
+// trip through the folded form.
+func TestBlockValuesKeepQuotesAndBackslashes(t *testing.T) {
+	f, err := Parse(strings.NewReader("version: 1\nprovenance:\n  - artifacts: a\n    record: r\n" +
+		"    ignore:\n      - \"a\\\\b\"\n      - plain\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := f.Provenance[0].Ignore; len(got) != 2 || got[0] != `a\b` {
+		t.Errorf("ignore = %q", got)
+	}
+}
