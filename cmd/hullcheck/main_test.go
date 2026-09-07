@@ -180,3 +180,71 @@ func TestSinceOutsideGitIsRefused(t *testing.T) {
 		t.Fatalf("exit = %d, want 2 outside a git repository", code)
 	}
 }
+
+// A copy hullcheck declines to make is a refusal like any other: exit 2, and a
+// message that says what it measured and which flag lifts it.
+func TestVerifyRefusesATreeOverTheCopyLimit(t *testing.T) {
+	code, _, errOut := run(t, "--no-banner", "--max-copy", "1", "--verify", verifiable(t))
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2", code)
+	}
+	for _, want := range []string{"REFUSED", "--max-copy", "Nothing was copied"} {
+		if !strings.Contains(errOut, want) {
+			t.Errorf("the refusal must mention %q:\n%s", want, errOut)
+		}
+	}
+}
+
+func TestScratchPlanMeasuresAndCopiesNothing(t *testing.T) {
+	code, out, _ := run(t, "--no-banner", "--scratch-plan", gated(t))
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	for _, want := range []string{"scratch plan", "files", "bytes"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the plan must report %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestBadCopyFlagsAreRefusedNotIgnored(t *testing.T) {
+	for _, args := range [][]string{
+		{"--no-banner", "--max-copy", "enormous", "."},
+		{"--no-banner", "--max-files", "-3", "."},
+		{"--no-banner", "--scratch-dir", "/no/such/place", "."},
+	} {
+		if code, _, _ := run(t, args...); code != 2 {
+			t.Errorf("%v: exit = %d, want 2", args, code)
+		}
+	}
+}
+
+// verifiable is a repository --verify will act on: a rule, and a manifest that
+// declares a gate with a fixture for it.
+func verifiable(t *testing.T) string {
+	return repo(t, map[string]string{
+		"RULES.md": "1.1 Every asset must record its provenance.\n",
+		".hullcheck.yml": "version: 1\nrules:\n  - id: RULES-1.1\n" +
+			"    statement: \"x\"\n    gate:\n      kind: command\n" +
+			"      run: \"true\"\n      fixture_path: bad.txt\n",
+	})
+}
+
+// Zero is the documented way to remove a limit. An int flag defaulting to zero
+// would swallow it and leave the default silently in force.
+func TestZeroRemovesTheCopyLimits(t *testing.T) {
+	root := verifiable(t)
+	for _, args := range [][]string{
+		{"--no-banner", "--max-copy", "0", "--verify", root},
+		{"--no-banner", "--max-files", "0", "--verify", root},
+	} {
+		if code, _, e := run(t, args...); code != 0 {
+			t.Errorf("%v: exit = %d, want 0\n%s", args, code, e)
+		}
+	}
+	// ...and a one-file limit still refuses, so the flag is really being read.
+	code, _, errOut := run(t, "--no-banner", "--max-files", "1", "--verify", root)
+	if code != 2 || !strings.Contains(errOut, "REFUSED") {
+		t.Errorf("--max-files 1 should refuse: exit = %d\n%s", code, errOut)
+	}
+}

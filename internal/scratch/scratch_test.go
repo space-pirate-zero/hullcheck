@@ -3,7 +3,9 @@ package scratch
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -134,5 +136,216 @@ func TestTimeoutIsDistinctFromANonZeroExit(t *testing.T) {
 	}
 	if !got.TimedOut {
 		t.Fatal("a hang must be reported as a timeout, not just a non-zero exit")
+	}
+}
+
+// git is what makes the copy respect .gitignore. Where it is absent the fallback
+// walk is what runs, and these tests would be testing nothing.
+func hasGit(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+}
+
+func gitInit(t *testing.T, root string) {
+	t.Helper()
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"config", "user.email", "test@example.com"},
+		{"config", "user.name", "test"},
+		{"add", "-A"},
+		{"commit", "-qm", "seed"},
+	} {
+		cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+}
+
+// The whole point of issue #1: the files a repository tells git to ignore are
+// exactly the ones a naive copy spends its time and disk on.
+func TestCopySkipsGitignoredFiles(t *testing.T) {
+	hasGit(t)
+	root := t.TempDir()
+	write := func(name, body string) {
+		p := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(".gitignore", "media/\n*.log\n")
+	write("kept.go", "package p")
+	write("media/huge.bin", strings.Repeat("x", 4096))
+	write("noisy.log", "chatter")
+	gitInit(t, root)
+	// Untracked but not ignored: a file the user has just written is part of the
+	// repository as it stands, and a gate under test must see it.
+	write("fresh.txt", "new")
+
+	d, err := Copy(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	for _, want := range []string{"kept.go", "fresh.txt", ".gitignore"} {
+		if _, err := os.Stat(filepath.Join(d.Path, want)); err != nil {
+			t.Errorf("%s should have been copied", want)
+		}
+	}
+	for _, skip := range []string{"media/huge.bin", "noisy.log"} {
+		if _, err := os.Stat(filepath.Join(d.Path, filepath.FromSlash(skip))); !os.IsNotExist(err) {
+			t.Errorf("%s is gitignored and must not be copied", skip)
+		}
+	}
+}
+
+// A tree too big to copy is refused with its measurement, and nothing is written.
+func TestCopyRefusesATreeOverTheLimit(t *testing.T) {
+	root := seed(t)
+	_, err := CopyWith(root, Options{MaxBytes: 1})
+	var big *TooLargeError
+	if !errors.As(err, &big) {
+		t.Fatalf("err = %v, want *TooLargeError", err)
+	}
+	if big.Bytes == 0 || big.Files == 0 {
+		t.Errorf("the refusal must carry the measurement, got %+v", big)
+	}
+	if !strings.Contains(big.Error(), "--max-copy") {
+		t.Errorf("the refusal must name the flag that lifts it: %q", big.Error())
+	}
+}
+
+func TestCopyRefusesTooManyFiles(t *testing.T) {
+	_, err := CopyWith(seed(t), Options{MaxFiles: 1})
+	var big *TooLargeError
+	if !errors.As(err, &big) {
+		t.Fatalf("err = %v, want *TooLargeError", err)
+	}
+	if !strings.Contains(big.Error(), "--max-files") {
+		t.Errorf("the refusal must name the flag that lifts it: %q", big.Error())
+	}
+}
+
+// A negative limit is the deliberate escape hatch, and must not refuse.
+func TestNegativeLimitMeansNoLimit(t *testing.T) {
+	d, err := CopyWith(seed(t), Options{MaxBytes: -1, MaxFiles: -1})
+	if err != nil {
+		t.Fatalf("an explicit no-limit copy must proceed: %v", err)
+	}
+	d.Close()
+}
+
+// Nothing may be left behind by a refusal: a half-copy is the failure the limit
+// exists to prevent.
+func TestARefusedCopyWritesNothing(t *testing.T) {
+	into := t.TempDir()
+	if _, err := CopyWith(seed(t), Options{Dir: into, MaxBytes: 1}); err == nil {
+		t.Fatal("expected a refusal")
+	}
+	ents, err := os.ReadDir(into)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ents) != 0 {
+		t.Errorf("a refused copy left %d entries behind", len(ents))
+	}
+}
+
+func TestScratchDirPlacesTheCopy(t *testing.T) {
+	into := t.TempDir()
+	d, err := CopyWith(seed(t), Options{Dir: into})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if !strings.HasPrefix(d.Path, into) {
+		t.Errorf("copy went to %s, want it under %s", d.Path, into)
+	}
+	e, err := EmptyWith(Options{Dir: into})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+	if !strings.HasPrefix(e.Path, into) {
+		t.Errorf("empty dir went to %s, want it under %s", e.Path, into)
+	}
+}
+
+func TestMeasureCopiesNothing(t *testing.T) {
+	into := t.TempDir()
+	bytes, files, _, err := Measure(seed(t), Options{Dir: into, MaxBytes: 1})
+	if err != nil {
+		t.Fatalf("Measure must report, never refuse: %v", err)
+	}
+	if bytes == 0 || files == 0 {
+		t.Errorf("Measure = %d bytes, %d files; want a real measurement", bytes, files)
+	}
+	ents, err := os.ReadDir(into)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ents) != 0 {
+		t.Errorf("Measure wrote %d entries; it must copy nothing", len(ents))
+	}
+}
+
+func TestParseSize(t *testing.T) {
+	for in, want := range map[string]int64{
+		"0": 0, "512": 512, "1KB": 1 << 10, "2MiB": 2 << 20,
+		"1.5GB": 1610612736, "3 TB": 3 << 40, "10 b": 10,
+	} {
+		got, err := ParseSize(in)
+		if err != nil {
+			t.Errorf("ParseSize(%q): %v", in, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("ParseSize(%q) = %d, want %d", in, got, want)
+		}
+	}
+	// An out-of-range value must be an error, never an implementation-defined
+	// int64 that the limits would read as "no limit".
+	for _, bad := range []string{"", "big", "12PB", "-4MB", "MB",
+		"99999999999999TB", "0.4"} {
+		if _, err := ParseSize(bad); err == nil {
+			t.Errorf("ParseSize(%q) should have failed", bad)
+		}
+	}
+}
+
+// A gitignored subtree lists nothing, and an empty copy would fail every control
+// run for a reason the output could not explain.
+func TestAnEmptyGitListingFallsBackToWalking(t *testing.T) {
+	hasGit(t)
+	root := t.TempDir()
+	for _, n := range []string{".gitignore", "inner/thing.txt"} {
+		p := filepath.Join(root, filepath.FromSlash(n))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("inner/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitInit(t, root)
+
+	inner := filepath.Join(root, "inner")
+	d, err := Copy(inner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if _, err := os.Stat(filepath.Join(d.Path, "thing.txt")); err != nil {
+		t.Error("a gitignored subtree must still be copied, by walking it")
 	}
 }
