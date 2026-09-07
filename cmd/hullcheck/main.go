@@ -28,6 +28,7 @@ import (
 	"github.com/space-pirate-zero/hullcheck/internal/refusal"
 	"github.com/space-pirate-zero/hullcheck/internal/report"
 	"github.com/space-pirate-zero/hullcheck/internal/scan"
+	"github.com/space-pirate-zero/hullcheck/internal/scratch"
 	"github.com/space-pirate-zero/hullcheck/internal/verify"
 )
 
@@ -55,6 +56,10 @@ flags:
   --badge           write a self-contained SVG coverage badge to stdout
   --refusals        prove your unattended tools stop when they claim to
   --provenance      can your generated artifacts say where they came from
+  --scratch-plan    measure what --verify/--refusals would copy, and copy nothing
+  --scratch-dir DIR create scratch copies here instead of the OS temp directory
+  --max-copy SIZE   refuse to copy more than this (default 2GiB; 0 disables)
+  --max-files N     refuse to copy more files than this (default 200000; 0 disables)
   --base REF        diff mode: treat REF as the baseline (default origin/HEAD)
   --fail-under N    exit 1 if gate coverage is below N percent
   --weighted        judge --fail-under against severity-weighted coverage
@@ -97,6 +102,10 @@ func execute(args []string, stdout, stderr io.Writer) int {
 		badge     = fs.Bool("badge", false, "write an SVG coverage badge to stdout")
 		doRefuse  = fs.Bool("refusals", false, "prove declared refusals")
 		doProv    = fs.Bool("provenance", false, "audit artifact provenance")
+		scratchAt = fs.String("scratch-dir", "", "create scratch copies here")
+		maxCopy   = fs.String("max-copy", "", "refuse to copy more than this many bytes")
+		maxFiles  = fs.Int("max-files", 0, "refuse to copy more than this many files")
+		planOnly  = fs.Bool("scratch-plan", false, "measure what would be copied, and copy nothing")
 	)
 	fs.Usage = func() { fmt.Fprint(stderr, usage) }
 	if err := fs.Parse(args); err != nil {
@@ -113,9 +122,19 @@ func execute(args []string, stdout, stderr io.Writer) int {
 		root = fs.Arg(0)
 	}
 
+	sopt, err := scratchOptions(*scratchAt, *maxCopy, *maxFiles)
+	if err != nil {
+		fmt.Fprintf(stderr, "hullcheck: %v\n", err)
+		return 2
+	}
+
 	// Chrome goes to stderr and only to a terminal, so `hullcheck --json | jq`
 	// stays byte-identical with and without a tty.
 	banner.Write(stderr, cols(), *noBanner, isTTY(os.Stderr))
+
+	if *planOnly {
+		return planMode(root, sopt, stdout, stderr)
+	}
 
 	if *since != "" {
 		return driftMode(root, *since, stdout, stderr)
@@ -148,7 +167,7 @@ func execute(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if *doRefuse {
-		return refusalMode(root, rep, stdout, stderr)
+		return refusalMode(root, rep, sopt, stdout, stderr)
 	}
 	if *doProv {
 		return provenanceMode(root, stdout, stderr)
@@ -234,8 +253,11 @@ func execute(args []string, stdout, stderr io.Writer) int {
 					"    hullcheck --print-manifest . > %s\n", manifest.Name, manifest.Name)
 			return 2
 		}
-		res, err := verify.Run(m, verify.Options{Root: root, Log: stderr})
+		res, err := verify.Run(m, verify.Options{Root: root, Log: stderr, Scratch: sopt})
 		if err != nil {
+			if refusedTooLarge(stderr, err) {
+				return 2
+			}
 			fmt.Fprintf(stderr, "hullcheck: verify: %v\n", err)
 			return 2
 		}
@@ -363,7 +385,7 @@ func shortRef(ref string) string {
 
 // refusalMode proves that unattended tools stop when they claim to. The verdict
 // that matters is PROCEEDS: a tool that says it refuses and does not.
-func refusalMode(root string, rep model.Report, stdout, stderr io.Writer) int {
+func refusalMode(root string, rep model.Report, sopt scratch.Options, stdout, stderr io.Writer) int {
 	m, _, err := manifest.Load(filepath.Join(root, manifest.Name))
 	if err != nil {
 		fmt.Fprintf(stderr, "hullcheck: %s: %v\n", manifest.Name, err)
@@ -372,8 +394,11 @@ func refusalMode(root string, rep model.Report, stdout, stderr io.Writer) int {
 	if m == nil {
 		m = &manifest.File{}
 	}
-	res, err := refusal.Audit(m, rep, refusal.Options{Root: root})
+	res, err := refusal.Audit(m, rep, refusal.Options{Root: root, Scratch: sopt})
 	if err != nil {
+		if refusedTooLarge(stderr, err) {
+			return 2
+		}
 		fmt.Fprintf(stderr, "hullcheck: %v\n", err)
 		return 2
 	}
@@ -460,4 +485,80 @@ func truncate(s string, n int) string {
 		return s[:n]
 	}
 	return s[:n-1] + "."
+}
+
+// scratchOptions turns the copy flags into limits. A user who has looked at the
+// measurement and decided it is fine writes 0, which means no limit - the escape
+// hatch has to exist, or the refusal becomes a wall.
+func scratchOptions(dir, maxCopy string, maxFiles int) (scratch.Options, error) {
+	opt := scratch.Options{Dir: dir}
+	if dir != "" {
+		st, err := os.Stat(dir)
+		if err != nil {
+			return opt, fmt.Errorf("--scratch-dir %s: %w", dir, err)
+		}
+		if !st.IsDir() {
+			return opt, fmt.Errorf("--scratch-dir %s: not a directory", dir)
+		}
+	}
+	if maxCopy != "" {
+		n, err := scratch.ParseSize(maxCopy)
+		if err != nil {
+			return opt, fmt.Errorf("--max-copy: %w", err)
+		}
+		opt.MaxBytes = n
+		if n == 0 {
+			opt.MaxBytes = -1
+		}
+	}
+	switch {
+	case maxFiles < 0:
+		return opt, fmt.Errorf("--max-files: %d is negative", maxFiles)
+	case maxFiles > 0:
+		opt.MaxFiles = maxFiles
+	}
+	// A byte limit lifted deliberately lifts the file count with it: someone who
+	// asked for an unbounded copy did not mean "unbounded, but only 200000 files".
+	if opt.MaxBytes < 0 && opt.MaxFiles == 0 {
+		opt.MaxFiles = -1
+	}
+	return opt, nil
+}
+
+// planMode measures what a verify or refusal pass would copy, and copies nothing.
+// Finding out that a tree is too large should not require starting to copy it.
+func planMode(root string, sopt scratch.Options, stdout, stderr io.Writer) int {
+	bytes, files, tracked, err := scratch.Measure(root, sopt)
+	if err != nil {
+		fmt.Fprintf(stderr, "hullcheck: %v\n", err)
+		return 2
+	}
+	source := "walking the directory (not a git work tree)"
+	if tracked {
+		source = "git ls-files: tracked, plus untracked files .gitignore does not exclude"
+	}
+	fmt.Fprintf(stdout, "HULLCHECK scratch plan\n\n"+
+		"  files      %8d\n  bytes      %8d\n  source     %s\n\n",
+		files, bytes, source)
+	fmt.Fprint(stdout, "  Every --verify rule and every --refusals entry copies this once.\n"+
+		"  Raise or remove the limit with --max-copy, and place the copy with --scratch-dir.\n")
+	return 0
+}
+
+// refusedTooLarge reports a copy hullcheck declined to make, in the shape the rest
+// of the tool refuses in: what it measured, and what to do about it. It returns
+// false when err is something else entirely.
+func refusedTooLarge(stderr io.Writer, err error) bool {
+	var big *scratch.TooLargeError
+	if !errors.As(err, &big) {
+		return false
+	}
+	fmt.Fprintf(stderr, "hullcheck: REFUSED\n\n  %v.\n\n"+
+		"  Copying it once per rule would very likely fill the disk, and a\n"+
+		"  half-written copy proves nothing. Nothing was copied.\n\n"+
+		"    hullcheck --scratch-plan .           what would be copied\n"+
+		"    --max-copy 20GB                      raise the limit (0 removes it)\n"+
+		"    --scratch-dir /volume/with/room      copy somewhere with space\n",
+		big)
+	return true
 }

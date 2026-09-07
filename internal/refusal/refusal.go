@@ -50,6 +50,10 @@ type Result struct {
 type Options struct {
 	Root    string
 	Timeout time.Duration
+	// Scratch bounds and places the throwaway copies. The audit makes two per
+	// declared refusal - a control and a treatment - so the limits matter here
+	// for the same reason they do in the verifier.
+	Scratch scratch.Options
 }
 
 // Audit proves every declared refusal. It reports only what it can demonstrate.
@@ -85,7 +89,7 @@ func prove(r manifest.Refusal, opt Options) (Result, error) {
 
 	// CONTROL: the tool must work when the condition is absent. Without this, a
 	// tool that is simply broken looks exactly like one that refuses correctly.
-	ctl, err := scratch.Copy(opt.Root)
+	ctl, err := scratch.CopyWith(opt.Root, opt.Scratch)
 	if err != nil {
 		return Result{}, err
 	}
@@ -106,9 +110,9 @@ func prove(r manifest.Refusal, opt Options) (Result, error) {
 	// TREATMENT: create the condition and run again.
 	var dir *scratch.Dir
 	if r.EmptyDir {
-		dir, err = scratch.Empty()
+		dir, err = scratch.EmptyWith(opt.Scratch)
 	} else {
-		dir, err = scratch.Copy(opt.Root)
+		dir, err = scratch.CopyWith(opt.Root, opt.Scratch)
 	}
 	if err != nil {
 		return Result{}, err

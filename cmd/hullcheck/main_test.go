@@ -180,3 +180,47 @@ func TestSinceOutsideGitIsRefused(t *testing.T) {
 		t.Fatalf("exit = %d, want 2 outside a git repository", code)
 	}
 }
+
+// A copy hullcheck declines to make is a refusal like any other: exit 2, and a
+// message that says what it measured and which flag lifts it.
+func TestVerifyRefusesATreeOverTheCopyLimit(t *testing.T) {
+	root := repo(t, map[string]string{
+		"RULES.md": "1.1 Every asset must record its provenance.\n",
+		".hullcheck.yml": "version: 1\nrules:\n  - id: RULES-1.1\n" +
+			"    statement: \"x\"\n    gate:\n      kind: command\n" +
+			"      run: \"true\"\n      fixture_path: bad.txt\n",
+	})
+	code, _, errOut := run(t, "--no-banner", "--max-copy", "1", "--verify", root)
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2", code)
+	}
+	for _, want := range []string{"REFUSED", "--max-copy", "Nothing was copied"} {
+		if !strings.Contains(errOut, want) {
+			t.Errorf("the refusal must mention %q:\n%s", want, errOut)
+		}
+	}
+}
+
+func TestScratchPlanMeasuresAndCopiesNothing(t *testing.T) {
+	code, out, _ := run(t, "--no-banner", "--scratch-plan", gated(t))
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	for _, want := range []string{"scratch plan", "files", "bytes"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the plan must report %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestBadCopyFlagsAreRefusedNotIgnored(t *testing.T) {
+	for _, args := range [][]string{
+		{"--no-banner", "--max-copy", "enormous", "."},
+		{"--no-banner", "--max-files", "-3", "."},
+		{"--no-banner", "--scratch-dir", "/no/such/place", "."},
+	} {
+		if code, _, _ := run(t, args...); code != 2 {
+			t.Errorf("%v: exit = %d, want 2", args, code)
+		}
+	}
+}

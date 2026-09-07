@@ -5,8 +5,10 @@
 // and watching the gate fail, so that is what this does.
 //
 // It never touches the repository being checked. Every fixture is applied inside a
-// scratch copy under the OS temp directory, which is removed afterwards — the
-// read-only guarantee survives verified mode.
+// scratch copy — under the OS temp directory unless --scratch-dir says otherwise —
+// which is removed afterwards, so the read-only guarantee survives verified mode.
+// A pass copies the repository once per rule, so the copy is bounded and measured
+// before it is made; see internal/scratch.
 //
 // --verify runs commands the manifest declares. That is executing content from the
 // repository, by explicit opt-in, and it is documented as such in SECURITY.md.
@@ -39,6 +41,10 @@ type Options struct {
 	Timeout time.Duration
 	// Log receives progress, because a verify pass is slow and silence reads as a hang.
 	Log io.Writer
+	// Scratch bounds and places the throwaway copy each proof runs in. A verify
+	// pass copies the repository once per rule, so an unbounded copy is a
+	// disk-filling surprise rather than a slow answer.
+	Scratch scratch.Options
 }
 
 // Run proves every rule in the manifest that carries a fixture.
@@ -81,7 +87,7 @@ func proveOne(root string, r manifest.Rule, opt Options) (Result, error) {
 	// The scratch copy, the timeout and the escape check all live in
 	// internal/scratch so the verifier and the refusal auditor cannot drift
 	// apart about what "never writes to your repository" means.
-	dir, err := scratch.Copy(root)
+	dir, err := scratch.CopyWith(root, opt.Scratch)
 	if err != nil {
 		return Result{}, err
 	}

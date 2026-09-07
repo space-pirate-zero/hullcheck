@@ -141,6 +141,37 @@ experiment and a hopeful guess, and it is what makes `FAKE` and `BROKEN` trustwo
 Your repository is never modified: fixtures are applied to a temp copy that is
 removed afterwards.
 
+### What gets copied, and what stops it
+
+A verify pass copies the repository once per rule, and a refusal audit twice per
+declared refusal, so what goes into that copy matters.
+
+The copy is **what git already knows about** — tracked files plus untracked files
+`.gitignore` does not exclude. Build output and ignored media are never copied, which
+is usually the difference between a copy that costs seconds and one that costs a
+volume. Outside a git work tree hullcheck falls back to walking the directory.
+
+The set is **measured before anything is written**, and a tree over the limit is
+refused with its size rather than half-copied:
+
+```
+hullcheck: REFUSED
+
+  the files git tracks here weigh 41.6 GiB across 90210 files, over the
+  --max-copy limit of 2.0 GiB.
+```
+
+| flag | what it does |
+|---|---|
+| `--scratch-plan` | measure what would be copied, and copy nothing |
+| `--max-copy SIZE` | raise the byte limit (default `2GiB`; `0` removes it) |
+| `--max-files N` | raise the file-count limit (default `200000`; `0` removes it) |
+| `--scratch-dir DIR` | put the copy on a volume with room, instead of `$TMPDIR` |
+
+Each rule still gets its own fresh copy. Reusing one across rules would be faster and
+would let one rule's fixture leak into the next rule's control, which is the kind of
+cross-contamination that turns a proof back into a guess.
+
 ## What it leaves behind
 
 Not *zero* — a binary is a footprint, and claiming zero is the kind of unenforceable
