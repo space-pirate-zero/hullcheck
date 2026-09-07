@@ -256,3 +256,23 @@ func snapshot(t *testing.T, root string) string {
 	}
 	return sb.String()
 }
+
+// Requiring a source creates a new way to miss - a typo, a moved document - and a
+// declaration that reaches nothing must never be silent.
+func TestApplyReportsADeclarationThatReachedNothing(t *testing.T) {
+	rep := model.Report{Findings: []model.Finding{
+		{Rule: model.Rule{ID: "RULES-1.1", File: "RULES.md"}, Verdict: model.Breach},
+	}}
+	for name, res := range map[string]Result{
+		"source names the wrong document": {RuleID: "RULES-1.1", Source: "docs/RULES.md", Verdict: model.Hold},
+		"id is not in the reading at all": {RuleID: "RULES-9.9", Source: "RULES.md", Verdict: model.Hold},
+	} {
+		out, warn := Apply(rep, []Result{res})
+		if out.Findings[0].Verdict != model.Breach {
+			t.Errorf("%s: an unmatched declaration must change nothing", name)
+		}
+		if len(warn) != 1 || !strings.Contains(warn[0], "changed nothing") {
+			t.Errorf("%s: want a warning, got %v", name, warn)
+		}
+	}
+}

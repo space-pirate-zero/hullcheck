@@ -205,14 +205,27 @@ func Apply(rep model.Report, res []Result) (model.Report, []string) {
 		rep.Findings[i].Why = r.Why
 	}
 
+	// Everything that reached nothing is said out loud. Requiring a source makes
+	// a new way to miss - a typo, a moved document, a leading "./" - and a
+	// declaration that quietly applies to nothing is the failure this change is
+	// about, not a smaller version of it that is acceptable.
 	for _, r := range res {
 		if applied[r.Key()] {
 			continue
 		}
-		if r.Source == "" && count[r.RuleID] > 1 {
+		switch {
+		case r.Source == "" && count[r.RuleID] > 1:
 			warn = append(warn, fmt.Sprintf(
 				"%s: %d rules in this repository carry that id and the declaration names no source:,"+
 					" so none of them was changed", r.RuleID, count[r.RuleID]))
+		case r.Source != "" && count[r.RuleID] > 0:
+			warn = append(warn, fmt.Sprintf(
+				"%s: no rule with that id was read from %s, so the declaration changed nothing"+
+					" - check the source: path against the reading", r.RuleID, r.Source))
+		default:
+			warn = append(warn, fmt.Sprintf(
+				"%s: the reading contains no rule with that id, so the declaration changed nothing",
+				r.RuleID))
 		}
 	}
 
