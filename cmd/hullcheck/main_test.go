@@ -402,3 +402,25 @@ func TestClausesRefusesARepositoryWithNoPolicy(t *testing.T) {
 		t.Errorf("exit = %d, want 2", code)
 	}
 }
+
+// UNPROVABLE is not a pass. A green build on a claim nothing tested is the exact
+// silent downgrade this audit exists to catch.
+func TestRefusalsExitOneOnUnprovable(t *testing.T) {
+	root := repo(t, map[string]string{
+		"RULES.md": "1.1 The indexer must never index from a git worktree.\n",
+		"tool.sh":  "#!/bin/sh\n[ -f .git ] && { echo refusing; exit 1; }\necho ok\n",
+		".hullcheck.yml": "version: 1\nrefusals:\n  - tool: indexer\n" +
+			"    when: \"the checkout is a git worktree\"\n    run: \"sh tool.sh\"\n" +
+			"    expect_exit: 1\n    expect_output: \"refusing\"\n",
+	})
+	code, out, _ := run(t, "--no-banner", "--refusals", root)
+	if strings.Contains(out, "PROCEEDS   indexer") {
+		t.Fatalf("a condition that could not be created must never read as PROCEEDS:\n%s", out)
+	}
+	if !strings.Contains(out, "UNPROVABLE") || !strings.Contains(out, "needs_git") {
+		t.Errorf("the verdict and its fix must be named:\n%s", out)
+	}
+	if code != 1 {
+		t.Errorf("exit = %d, want 1: UNPROVABLE is not a pass", code)
+	}
+}

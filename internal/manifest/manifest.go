@@ -34,6 +34,11 @@ type Gate struct {
 	// Without a fixture a gate can be declared but never proven.
 	FixturePath string `json:"fixture_path,omitempty"`
 	FixtureBody string `json:"fixture_body,omitempty"`
+	// NeedsGit copies .git into the scratch copy, for a gate that reads history
+	// or tracked-file state. Without it such a gate fails its control run, which
+	// says hullcheck could not create the conditions - not that the gate is
+	// broken, and those are different findings.
+	NeedsGit bool `json:"needs_git,omitempty"`
 }
 
 // Rule is a declared rule and the gate that holds it.
@@ -99,6 +104,12 @@ type Refusal struct {
 	// ExpectOutput is a string the refusal must print, so an accidental crash
 	// with the right exit code is not mistaken for a considered refusal.
 	ExpectOutput string `json:"expect_output,omitempty"`
+	// NeedsGit copies .git into the scratch copy. A refusal whose condition is a
+	// git fact - "this is a linked worktree", "this is not a repository" - cannot
+	// exist in a copy that has no .git, and a tool audited without it runs
+	// happily and is reported as proceeding under a condition that was never
+	// created.
+	NeedsGit bool `json:"needs_git,omitempty"`
 }
 
 // Provenance declares what counts as a provenance record for a set of artifacts.
@@ -327,6 +338,8 @@ func assignRefusal(r *Refusal, kv string, line int) error {
 		r.ExpectExit = n
 	case "expect_output":
 		r.ExpectOutput = v
+	case "needs_git":
+		r.NeedsGit = v == "true"
 	default:
 		return fmt.Errorf("line %d: unknown refusal key %q", line, k)
 	}
@@ -384,6 +397,8 @@ func assignGate(g *Gate, kv string, line int) error {
 		g.FixturePath = v
 	case "fixture_body":
 		g.FixtureBody = v
+	case "needs_git":
+		g.NeedsGit = v == "true"
 	default:
 		return fmt.Errorf("line %d: unknown gate key %q", line, k)
 	}

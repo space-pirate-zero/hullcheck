@@ -2,6 +2,7 @@ package refusal
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -169,5 +170,114 @@ func TestRemovalCannotEscapeTheCopy(t *testing.T) {
 	}}}
 	if _, err := Audit(m, model.Report{}, Options{Root: root, Timeout: 10 * time.Second}); err == nil {
 		t.Fatal("a removal escaping the copy must be refused")
+	}
+}
+
+// Issue #6, the sharp case: the scratch copy has no .git, so a refusal whose
+// condition is a git fact cannot fire. The tool runs happily, and calling that
+// PROCEEDS would send someone to fix a refusal that is correct and load-bearing.
+func TestAGitConditionThatCannotExistIsUnprovableNotProceeds(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "tool.sh"),
+		[]byte("#!/bin/sh\n[ -f .git ] && { echo refusing: worktree; exit 1; }\necho ok\n"),
+		0o700); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Audit(&manifest.File{Refusals: []manifest.Refusal{{
+		Tool: "indexer", When: "the checkout is a git worktree",
+		Run: "sh tool.sh", ExpectExit: 1, ExpectOutput: "refusing",
+	}}}, model.Report{}, Options{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res) != 1 {
+		t.Fatalf("got %d results, want 1", len(res))
+	}
+	if res[0].Verdict == Proceeds {
+		t.Fatal("a condition that could not be created must never be reported as PROCEEDS")
+	}
+	if res[0].Verdict != Unprovable {
+		t.Fatalf("verdict = %q, want UNPROVABLE", res[0].Verdict)
+	}
+	if !strings.Contains(res[0].Why, "needs_git") {
+		t.Errorf("the verdict must name the fix: %q", res[0].Why)
+	}
+}
+
+// A refusal that does fire is still proven, git-shaped or not: the downgrade
+// applies only to the outcomes the missing .git could have caused.
+func TestAGitConditionThatDoesFireIsStillProven(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "tool.sh"),
+		[]byte("#!/bin/sh\n[ -f STOP ] && { echo refusing: git worktree; exit 1; }\necho ok\n"),
+		0o700); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Audit(&manifest.File{Refusals: []manifest.Refusal{{
+		Tool: "indexer", When: "the checkout is a git worktree", Run: "sh tool.sh",
+		FixturePath: "STOP", FixtureBody: "x", ExpectExit: 1, ExpectOutput: "refusing",
+	}}}, model.Report{}, Options{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res[0].Verdict != Refuses {
+		t.Fatalf("verdict = %q, want REFUSES", res[0].Verdict)
+	}
+}
+
+// With needs_git the copy carries .git, so the condition can be built and the
+// audit reaches a real verdict.
+func TestNeedsGitCarriesTheRepositoryIntoTheCopy(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "tool.sh"),
+		[]byte("#!/bin/sh\n[ -f .git ] && { echo refusing: worktree; exit 1; }\n"+
+			"[ -d .git ] || { echo no repository; exit 3; }\necho ok\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"init", "-q"}, {"add", "-A"},
+		{"-c", "user.email=t@e", "-c", "user.name=t", "commit", "-qm", "seed"}} {
+		cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	res, err := Audit(&manifest.File{Refusals: []manifest.Refusal{{
+		Tool: "indexer", When: "the checkout is a git worktree", Run: "sh tool.sh",
+		NeedsGit: true, Remove: ".git", FixturePath: ".git",
+		FixtureBody: "gitdir: /elsewhere\n", ExpectExit: 1, ExpectOutput: "refusing",
+	}}}, model.Report{}, Options{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res[0].Verdict != Refuses {
+		t.Fatalf("verdict = %q (%s), want REFUSES: the control needs a real .git and the "+
+			"treatment needs it replaced by a file", res[0].Verdict, res[0].Why)
+	}
+}
+
+// needs_git cannot conjure a repository that is not there. Whether the condition
+// could exist is a fact about the copy, not about the flag.
+func TestNeedsGitInADirectoryThatIsNotARepositoryIsStillUnprovable(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "tool.sh"),
+		[]byte("#!/bin/sh\n[ -f .git ] && { echo refusing; exit 1; }\necho ok\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Audit(&manifest.File{Refusals: []manifest.Refusal{{
+		Tool: "indexer", When: "the checkout is a git worktree", Run: "sh tool.sh",
+		NeedsGit: true, ExpectExit: 1, ExpectOutput: "refusing",
+	}}}, model.Report{}, Options{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res[0].Verdict != Unprovable {
+		t.Fatalf("verdict = %q, want UNPROVABLE - needs_git is set but there is no repository",
+			res[0].Verdict)
+	}
+	if !strings.Contains(res[0].Why, "not a git work tree") {
+		t.Errorf("the verdict must say why needs_git did not help: %q", res[0].Why)
 	}
 }

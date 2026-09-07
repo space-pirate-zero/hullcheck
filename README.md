@@ -231,6 +231,61 @@ counted in this reading
 The one thing it will not do is guess: where a declaration names no `source:` and
 several rules share its id, nothing is changed and nothing is added.
 
+### Gates and refusals that read git
+
+The scratch copy leaves out `.git` by default: it is often the largest thing in a
+repository and most commands under test have no use for it. Anything that reads
+history, tracked-file state, or whether the checkout is a worktree does, and says so:
+
+```yaml
+    gate:
+      run: "python check_skill_updates.py --range origin/master...HEAD"
+      needs_git: true
+```
+
+`needs_git: true` works on a refusal too, and is what makes a git-shaped condition
+constructible — replace the copied `.git` directory with a `.git` file and a tool
+that refuses to run inside a linked worktree can be proven:
+
+```yaml
+  refusals:
+    - tool: asset-indexer
+      when: "the checkout is a git worktree"
+      run: "./index.py"
+      needs_git: true
+      remove: ".git"
+      fixture_path: ".git"
+      fixture_body: "gitdir: /elsewhere/.git/worktrees/w\n"
+      expect_exit: 1
+      expect_output: "refusing to index"
+```
+
+The copy is verbatim, including a `.git` that is a file rather than a directory.
+Rewriting that pointer to reach the original repository would let a command under
+test write into the repository hullcheck is reading, and that is not a trade worth a
+verdict.
+
+### UNPROVABLE: the verdict hullcheck could not earn
+
+Without `needs_git`, a command whose condition is a git fact runs in a copy where
+that fact cannot be true. It works, and the old audit called that **PROCEEDS** — the
+finding this whole feature exists to produce — against a refusal that is correct,
+load-bearing, and may already have prevented a real incident. Someone acting on it
+would go and break a working check.
+
+So hullcheck now reports `UNPROVABLE` instead, and names the fix:
+
+```
+  UNPROVABLE asset-indexer   the tool ran to success, but the condition is a git fact
+                             and the scratch copy has no .git, so it was never put in
+                             the situation it claims to refuse - add needs_git: true
+```
+
+`UNPROVABLE` is not a pass, and `--refusals` exits 1 on it: a green build on a claim
+nothing tested is the exact silent downgrade this audit is for. A gate whose control
+run fails only because git is missing is reported the same way — `BROKEN` is a finding
+about the gate, and this is a finding about the experiment.
+
 ### `source:` is half a rule's name
 
 A rule id is the clause number plus the document's basename, so a repository with

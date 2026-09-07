@@ -198,3 +198,21 @@ func TestPrintWarnsAboutIDsSharedBetweenDocuments(t *testing.T) {
 		t.Errorf("a generated manifest must parse: %v", err)
 	}
 }
+
+// needs_git is what makes a git-dependent gate or refusal auditable at all, so it
+// has to survive the parser on both.
+func TestNeedsGitParsesOnGatesAndRefusals(t *testing.T) {
+	f, err := Parse(strings.NewReader("version: 1\nrules:\n" +
+		"  - id: R-1\n    source: RULES.md\n    gate:\n      kind: command\n" +
+		"      run: \"git log\"\n      needs_git: true\n" +
+		"refusals:\n  - tool: t\n    run: \"./t\"\n    needs_git: true\n    expect_exit: 1\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Rules[0].Gate == nil || !f.Rules[0].Gate.NeedsGit {
+		t.Errorf("gate needs_git was not read: %+v", f.Rules[0].Gate)
+	}
+	if !f.Refusals[0].NeedsGit {
+		t.Errorf("refusal needs_git was not read: %+v", f.Refusals[0])
+	}
+}

@@ -70,7 +70,7 @@ flags:
 
 exit codes:
   0  a reading was produced
-  1  --fail-under was breached
+  1  --fail-under was breached, or an audit found something
   2  refused - see the message
 
 hullcheck reads. It never writes to your repository, and it makes no network
@@ -427,12 +427,23 @@ func refusalMode(root string, rep model.Report, sopt scratch.Options, stdout, st
 	fmt.Fprintf(stdout, "  REFUSES    %4d   proven: worked normally, then stopped as declared\n", c[refusal.Refuses])
 	fmt.Fprintf(stdout, "  PROCEEDS   %4d   ran anyway under a condition it claims to refuse\n", c[refusal.Proceeds])
 	fmt.Fprintf(stdout, "  BROKEN     %4d   failed either way, or not in the way it declared\n", c[refusal.Broken])
+	fmt.Fprintf(stdout, "  UNPROVABLE %4d   the condition could not be created, so nothing was tested\n", c[refusal.Unprovable])
 	fmt.Fprintln(stdout)
 	for _, r := range res {
 		fmt.Fprintf(stdout, "  %-10s %-22s %s\n", r.Verdict, truncate(r.Tool, 22), r.Why)
 	}
 	if c[refusal.Proceeds] > 0 {
 		fmt.Fprint(stdout, "\n  A tool that claims to stop and does not is a silent downgrade.\n")
+		return 1
+	}
+	if c[refusal.Unprovable] > 0 {
+		// Exiting 0 here would be the failure this tool is about: a green build
+		// on a claim nothing tested. Nobody's build turns red who was green
+		// before - every case that reports UNPROVABLE today reported a false
+		// PROCEEDS yesterday, and that already exited 1.
+		fmt.Fprint(stdout, "\n  UNPROVABLE is not a pass. hullcheck could not build the condition, so it\n"+
+			"  tested nothing - and reporting PROCEEDS there would have sent you to fix a\n"+
+			"  refusal that may be correct and load-bearing.\n")
 		return 1
 	}
 	return 0

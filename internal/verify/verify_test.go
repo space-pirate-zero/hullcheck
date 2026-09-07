@@ -2,6 +2,7 @@ package verify
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -365,5 +366,70 @@ func TestAnAddedRuleWithNoGateCarriesNone(t *testing.T) {
 	}
 	if len(out.Findings[0].Gates) != 0 {
 		t.Errorf("a rule with no declared gate must carry none: %+v", out.Findings[0].Gates)
+	}
+}
+
+// A git-dependent gate in a copy with no .git has not been shown to be broken.
+// BROKEN is a finding about the gate; this is a finding about the experiment.
+func TestAGitGateWithoutNeedsGitIsUnprovableNotBroken(t *testing.T) {
+	root := repo(t, map[string]string{"x.txt": "x"})
+	m := &manifest.File{Version: 1, Rules: []manifest.Rule{{
+		ID: "R-1", Source: "RULES.md",
+		Gate: &manifest.Gate{
+			Run: "git rev-parse --is-inside-work-tree", FixturePath: "bad.txt",
+		},
+	}}}
+	got := only(t, mustRun(t, m, root))
+	if got.Verdict == model.Broken {
+		t.Fatal("a gate hullcheck could not run must not be reported as one that decides nothing")
+	}
+	if got.Verdict != model.Unprovable {
+		t.Fatalf("verdict = %q, want UNPROVABLE", got.Verdict)
+	}
+	if !strings.Contains(got.Why, "needs_git") {
+		t.Errorf("the verdict must name the fix: %q", got.Why)
+	}
+}
+
+// A gate that has nothing to do with git and fails its control is still BROKEN.
+func TestANonGitGateThatFailsItsControlIsStillBroken(t *testing.T) {
+	root := repo(t, map[string]string{"x.txt": "x"})
+	m := &manifest.File{Version: 1, Rules: []manifest.Rule{{
+		ID: "R-1", Source: "RULES.md",
+		Gate: &manifest.Gate{Run: "exit 7", FixturePath: "bad.txt"},
+	}}}
+	if got := only(t, mustRun(t, m, root)); got.Verdict != model.Broken {
+		t.Fatalf("verdict = %q, want BROKEN", got.Verdict)
+	}
+}
+
+// With needs_git the copy carries .git, so a git-reading gate can be proven.
+func TestNeedsGitLetsAGitGateBeProven(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	root := repo(t, map[string]string{
+		"ok.txt": "x",
+		// Fails when an untracked file appears: a gate that genuinely reads git.
+		"gate.sh": "#!/bin/sh\ntest -z \"$(git status --porcelain)\"\n",
+	})
+	for _, args := range [][]string{{"init", "-q"}, {"add", "-A"},
+		{"-c", "user.email=t@e", "-c", "user.name=t", "commit", "-qm", "seed"}} {
+		cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	m := &manifest.File{Version: 1, Rules: []manifest.Rule{{
+		ID: "R-1", Source: "RULES.md",
+		Gate: &manifest.Gate{
+			Run: "sh gate.sh", NeedsGit: true,
+			FixturePath: "stray.txt", FixtureBody: "untracked\n",
+		},
+	}}}
+	got := only(t, mustRun(t, m, root))
+	if got.Verdict != model.Hold {
+		t.Fatalf("verdict = %q (%s), want HOLD: with .git present the gate can be proven",
+			got.Verdict, got.Why)
 	}
 }

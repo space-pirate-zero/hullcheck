@@ -110,7 +110,9 @@ func proveOne(root string, r manifest.Rule, opt Options) (Result, error) {
 	// The scratch copy, the timeout and the escape check all live in
 	// internal/scratch so the verifier and the refusal auditor cannot drift
 	// apart about what "never writes to your repository" means.
-	dir, err := scratch.CopyWith(root, opt.Scratch)
+	sopt := opt.Scratch
+	sopt.IncludeGit = r.Gate.NeedsGit
+	dir, err := scratch.CopyWith(root, sopt)
 	if err != nil {
 		return Result{}, err
 	}
@@ -130,6 +132,21 @@ func proveOne(root string, r manifest.Rule, opt Options) (Result, error) {
 				" - check that %q terminates", r.Gate.Run)), nil
 	}
 	if clean.Exit != 0 {
+		// A git-dependent gate in a copy with no .git has not been shown to be
+		// broken; it has been shown that hullcheck did not build the conditions
+		// it needs. Reporting BROKEN would be a verdict about the gate that the
+		// experiment did not earn.
+		if needsGit(r.Gate.Run) && !dir.HasGit() {
+			fix := "add needs_git: true to its gate block"
+			if r.Gate.NeedsGit {
+				fix = "needs_git is set, but this directory is not a git work tree," +
+					" so there was no repository to carry into the copy"
+			}
+			return result(r, model.Unprovable, fmt.Sprintf(
+				"the gate reads git, and the scratch copy has no .git, so it fails (exit %d)"+
+					" with the rule intact for a reason that says nothing about the gate - %s",
+				clean.Exit, fix)), nil
+		}
 		return result(r, model.Broken, fmt.Sprintf(
 			"the gate fails (exit %d) even with the rule intact, so it discriminates nothing"+
 				" - check that %q can run", clean.Exit, r.Gate.Run)), nil
@@ -162,6 +179,19 @@ func proveOne(root string, r manifest.Rule, opt Options) (Result, error) {
 	}
 	return result(r, model.Fake,
 		"the gate passed even with the rule broken - a patch that is only paint"), nil
+}
+
+// needsGit reports whether a command reads git. Word-boundary matching, so a
+// path like "digit/" or a target called "gitignore-check" does not trigger it.
+func needsGit(cmd string) bool {
+	for _, f := range strings.FieldsFunc(strings.ToLower(cmd), func(r rune) bool {
+		return !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9')
+	}) {
+		if f == "git" {
+			return true
+		}
+	}
+	return false
 }
 
 // result carries the declaration alongside the verdict. Keeping the declared
