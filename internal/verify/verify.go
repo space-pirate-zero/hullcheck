@@ -136,11 +136,16 @@ func proveOne(root string, r manifest.Rule, opt Options) (Result, error) {
 		// broken; it has been shown that hullcheck did not build the conditions
 		// it needs. Reporting BROKEN would be a verdict about the gate that the
 		// experiment did not earn.
-		if !r.Gate.NeedsGit && needsGit(r.Gate.Run) {
+		if needsGit(r.Gate.Run) && !dir.HasGit() {
+			fix := "add needs_git: true to its gate block"
+			if r.Gate.NeedsGit {
+				fix = "needs_git is set, but this directory is not a git work tree," +
+					" so there was no repository to carry into the copy"
+			}
 			return result(r, model.Unprovable, fmt.Sprintf(
 				"the gate reads git, and the scratch copy has no .git, so it fails (exit %d)"+
-					" with the rule intact for a reason that says nothing about the gate"+
-					" - add needs_git: true to its gate block", clean.Exit)), nil
+					" with the rule intact for a reason that says nothing about the gate - %s",
+				clean.Exit, fix)), nil
 		}
 		return result(r, model.Broken, fmt.Sprintf(
 			"the gate fails (exit %d) even with the rule intact, so it discriminates nothing"+

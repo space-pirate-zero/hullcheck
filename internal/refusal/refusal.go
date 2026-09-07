@@ -110,16 +110,20 @@ func needsGit(r manifest.Refusal) bool {
 	return false
 }
 
+// advice names the fix, which differs by why the copy has no repository.
+func advice(r manifest.Refusal) string {
+	if r.NeedsGit {
+		return "needs_git is set, but this directory is not a git work tree, so there was" +
+			" no repository to carry into the copy"
+	}
+	return "add needs_git: true to audit this refusal"
+}
+
 func prove(r manifest.Refusal, opt Options) (Result, error) {
 	if r.Run == "" {
 		return Result{r.Tool, r.When, Broken, "no command declared, so nothing can be proven"}, nil
 	}
 
-	// A condition that turns on a git fact cannot exist in a copy with no .git.
-	// Everything below still runs - a tool that refuses anyway has proven it -
-	// but PROCEEDS and a failed control are downgraded to UNPROVABLE, because
-	// neither of them is a finding about the tool.
-	blind := !r.NeedsGit && needsGit(r)
 	sopt := opt.Scratch
 	sopt.IncludeGit = r.NeedsGit
 
@@ -130,6 +134,16 @@ func prove(r manifest.Refusal, opt Options) (Result, error) {
 		return Result{}, err
 	}
 	defer ctl.Close()
+
+	// A condition that turns on a git fact cannot exist in a copy with no .git.
+	// Read that off the copy rather than off the flag: a directory that is not a
+	// git work tree has no .git to carry, so needs_git changes nothing there and
+	// the condition is just as impossible.
+	//
+	// Everything below still runs - a tool that refuses anyway has proven it -
+	// but PROCEEDS and a failed control are downgraded to UNPROVABLE, because
+	// neither of them is a finding about the tool.
+	blind := needsGit(r) && !ctl.HasGit()
 	base, err := ctl.Run(r.Run, opt.Timeout)
 	if err != nil {
 		return Result{}, err
@@ -141,8 +155,8 @@ func prove(r manifest.Refusal, opt Options) (Result, error) {
 		if blind {
 			return Result{r.Tool, r.When, Unprovable, fmt.Sprintf(
 				"the condition is a git fact and the scratch copy has no .git, and the tool"+
-					" already fails (exit %d) without it - add needs_git: true to audit this refusal",
-				base.Exit)}, nil
+					" already fails (exit %d) without it - %s",
+				base.Exit, advice(r))}, nil
 		}
 		return Result{r.Tool, r.When, Broken, fmt.Sprintf(
 			"the tool already fails (exit %d) without the condition, so its refusal cannot be told apart from being broken",
@@ -185,7 +199,7 @@ func prove(r manifest.Refusal, opt Options) (Result, error) {
 		return Result{r.Tool, r.When, Unprovable,
 			"the tool ran to success, but the condition is a git fact and the scratch copy" +
 				" has no .git, so it was never put in the situation it claims to refuse" +
-				" - add needs_git: true to audit this refusal"}, nil
+				" - " + advice(r)}, nil
 	case got.Exit == 0:
 		return Result{r.Tool, r.When, Proceeds,
 			"the tool ran to success under a condition it claims to refuse - a silent downgrade"}, nil

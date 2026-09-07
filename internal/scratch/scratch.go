@@ -178,6 +178,18 @@ func EmptyWith(opt Options) (*Dir, error) {
 	return &Dir{Path: dst}, nil
 }
 
+// HasGit reports whether the copy actually contains a repository. Whether a
+// git-shaped condition could exist is a fact about the copy, not about the flag
+// that asked for one: a repository that is not a git work tree has no .git to
+// copy, and asking for one changes nothing.
+func (d *Dir) HasGit() bool {
+	if d == nil || d.Path == "" {
+		return false
+	}
+	_, err := os.Lstat(filepath.Join(d.Path, ".git"))
+	return err == nil
+}
+
 // Close removes the copy.
 func (d *Dir) Close() {
 	if d != nil && d.Path != "" {

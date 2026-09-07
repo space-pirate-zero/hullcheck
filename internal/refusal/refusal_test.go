@@ -257,3 +257,27 @@ func TestNeedsGitCarriesTheRepositoryIntoTheCopy(t *testing.T) {
 			"treatment needs it replaced by a file", res[0].Verdict, res[0].Why)
 	}
 }
+
+// needs_git cannot conjure a repository that is not there. Whether the condition
+// could exist is a fact about the copy, not about the flag.
+func TestNeedsGitInADirectoryThatIsNotARepositoryIsStillUnprovable(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "tool.sh"),
+		[]byte("#!/bin/sh\n[ -f .git ] && { echo refusing; exit 1; }\necho ok\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Audit(&manifest.File{Refusals: []manifest.Refusal{{
+		Tool: "indexer", When: "the checkout is a git worktree", Run: "sh tool.sh",
+		NeedsGit: true, ExpectExit: 1, ExpectOutput: "refusing",
+	}}}, model.Report{}, Options{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res[0].Verdict != Unprovable {
+		t.Fatalf("verdict = %q, want UNPROVABLE - needs_git is set but there is no repository",
+			res[0].Verdict)
+	}
+	if !strings.Contains(res[0].Why, "not a git work tree") {
+		t.Errorf("the verdict must say why needs_git did not help: %q", res[0].Why)
+	}
+}

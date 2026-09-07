@@ -123,7 +123,7 @@ func Text(w io.Writer, r model.Report, verified bool) {
 		fmt.Fprintf(w, "  BROKEN    %4d   the gate fails either way; it proves nothing\n", c[model.Broken])
 	}
 	if c[model.Unprovable] > 0 {
-		fmt.Fprintf(w, "  UNPROVABLE %3d   hullcheck could not build the conditions to judge it\n",
+		fmt.Fprintf(w, "  UNPROVABLE%4d   hullcheck could not build the conditions to judge it\n",
 			c[model.Unprovable])
 	}
 	fmt.Fprintf(w, "  UNLOGGED  %4d   a gate runs, enforcing nothing anyone wrote down\n\n",
