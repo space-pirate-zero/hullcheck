@@ -24,6 +24,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -234,8 +235,80 @@ type Result struct {
 	TimedOut bool
 }
 
+// Env is a change to the environment a command runs in.
+//
+// The conditions unattended tools actually refuse on are mostly environmental: a
+// required binary missing from PATH, a credential expired or absent. Neither can
+// be created by writing or deleting a file inside a copy, so neither could be
+// declared at all.
+type Env struct {
+	// Set replaces or adds variables. An empty value means present-but-empty,
+	// which is a different condition from absent.
+	Set map[string]string
+	// Unset removes variables, for the common "the credential is not there".
+	// A name in both Set and Unset is a contradiction the manifest parser
+	// refuses, so apply need not choose between them.
+	Unset []string
+}
+
+// Empty reports whether this changes nothing, so a caller can say so.
+func (e Env) Empty() bool { return len(e.Set) == 0 && len(e.Unset) == 0 }
+
+// Describe names the change in the order a reader would say it, for the verdict
+// text: a refusal proven under a modified environment must say which one.
+func (e Env) Describe() string {
+	var parts []string
+	keys := make([]string, 0, len(e.Set))
+	for k := range e.Set {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		parts = append(parts, k+" set")
+	}
+	for _, k := range e.Unset {
+		parts = append(parts, k+" unset")
+	}
+	return strings.Join(parts, ", ")
+}
+
+// apply builds the environment for one command: the ambient one, minus what was
+// unset, plus what was set.
+func (e Env) apply() []string {
+	drop := make(map[string]bool, len(e.Unset))
+	for _, k := range e.Unset {
+		drop[k] = true
+	}
+	for k := range e.Set {
+		drop[k] = true
+	}
+	out := make([]string, 0, len(os.Environ())+len(e.Set)+1)
+	for _, kv := range os.Environ() {
+		k, _, _ := strings.Cut(kv, "=")
+		if !drop[k] {
+			out = append(out, kv)
+		}
+	}
+	keys := make([]string, 0, len(e.Set))
+	for k := range e.Set {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		out = append(out, k+"="+e.Set[k])
+	}
+	return append(out, "HULLCHECK=1")
+}
+
 // Run executes a command inside the copy and captures its combined output.
 func (d *Dir) Run(command string, timeout time.Duration) (Result, error) {
+	return d.RunWith(command, timeout, Env{})
+}
+
+// RunWith is Run under a changed environment. The shell itself is still found on
+// the ambient PATH, so replacing PATH removes what the command can reach without
+// making the command unrunnable.
+func (d *Dir) RunWith(command string, timeout time.Duration, env Env) (Result, error) {
 	if timeout == 0 {
 		timeout = Timeout
 	}
@@ -243,7 +316,7 @@ func (d *Dir) Run(command string, timeout time.Duration) (Result, error) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "sh", "-c", command) //nolint:gosec // declared by the manifest author
 	cmd.Dir = d.Path
-	cmd.Env = append(os.Environ(), "HULLCHECK=1")
+	cmd.Env = env.apply()
 	out, err := cmd.CombinedOutput()
 	if ctx.Err() != nil {
 		return Result{Exit: -1, Output: string(out), TimedOut: true}, nil

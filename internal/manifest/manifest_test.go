@@ -216,3 +216,62 @@ func TestNeedsGitParsesOnGatesAndRefusals(t *testing.T) {
 		t.Errorf("refusal needs_git was not read: %+v", f.Refusals[0])
 	}
 }
+
+func TestEnvAndUnsetEnvParse(t *testing.T) {
+	f, err := Parse(strings.NewReader("version: 1\nrefusals:\n  - tool: t\n    run: \"./t\"\n" +
+		"    env: { PATH: \"/usr/bin:/bin\", TOKEN: \"\" }\n" +
+		"    unset_env: [GOOGLE_APPLICATION_CREDENTIALS, AWS_PROFILE]\n    expect_exit: 1\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := f.Refusals[0]
+	if r.Env["PATH"] != "/usr/bin:/bin" {
+		t.Errorf("a quoted value must keep its colons: %q", r.Env["PATH"])
+	}
+	if v, ok := r.Env["TOKEN"]; !ok || v != "" {
+		t.Errorf("present-but-empty must survive as its own condition: %q %v", v, ok)
+	}
+	if len(r.UnsetEnv) != 2 || r.UnsetEnv[0] != "GOOGLE_APPLICATION_CREDENTIALS" {
+		t.Errorf("unset_env = %v", r.UnsetEnv)
+	}
+}
+
+func TestBadEnvIsRefusedNotGuessed(t *testing.T) {
+	for name, in := range map[string]string{
+		"not a mapping": "version: 1\nrefusals:\n  - tool: t\n    env: PATH=/bin\n",
+		"no value":      "version: 1\nrefusals:\n  - tool: t\n    env: { PATH }\n",
+		"empty name":    "version: 1\nrefusals:\n  - tool: t\n    env: { : x }\n",
+	} {
+		if _, err := Parse(strings.NewReader(in)); err == nil {
+			t.Errorf("%s: expected an error", name)
+		}
+	}
+}
+
+// A declaration that cannot mean anything must be refused, not written into an
+// environment where nothing can read it back.
+func TestUnusableEnvNamesAreRefused(t *testing.T) {
+	for name, in := range map[string]string{
+		"a space":       "version: 1\nrefusals:\n  - tool: t\n    env: { MY VAR: x }\n",
+		"leading digit": "version: 1\nrefusals:\n  - tool: t\n    env: { 2FA: x }\n",
+		"punctuation":   "version: 1\nrefusals:\n  - tool: t\n    env: { \"A-B\": x }\n",
+		"in unset_env":  "version: 1\nrefusals:\n  - tool: t\n    unset_env: [MY VAR]\n",
+	} {
+		if _, err := Parse(strings.NewReader(in)); err == nil {
+			t.Errorf("%s: expected an error", name)
+		}
+	}
+}
+
+// Setting and unsetting the same variable says two opposite things, and picking
+// one silently audits a tool under a condition its author did not declare.
+func TestAVariableInBothEnvAndUnsetEnvIsRefused(t *testing.T) {
+	_, err := Parse(strings.NewReader("version: 1\nrefusals:\n  - tool: t\n" +
+		"    env: { TOKEN: \"x\" }\n    unset_env: [TOKEN]\n"))
+	if err == nil {
+		t.Fatal("expected a refusal")
+	}
+	if !strings.Contains(err.Error(), "TOKEN") {
+		t.Errorf("the error must name the variable: %v", err)
+	}
+}

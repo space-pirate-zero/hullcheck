@@ -265,6 +265,46 @@ Rewriting that pointer to reach the original repository would let a command unde
 test write into the repository hullcheck is reading, and that is not a trade worth a
 verdict.
 
+### Refusals that turn on the environment
+
+Writing a file, deleting a path, or running in an empty directory covers "the input
+is absent" well. It does not cover the conditions unattended tools actually refuse
+on, which are mostly environmental. `env:` replaces or adds variables and
+`unset_env:` removes them, for the run that should refuse:
+
+```yaml
+refusals:
+  - tool: merch-cost
+    when: "node is not on PATH"
+    run: "python3 publishing/merch_cost.py --check"
+    env: { PATH: "/usr/bin:/bin" }
+    expect_exit: 1
+    expect_output: "needs `node`"
+
+  - tool: uploader
+    when: "the credential is absent"
+    run: "./upload.sh"
+    unset_env: [GOOGLE_APPLICATION_CREDENTIALS]
+    expect_exit: 2
+```
+
+The **control still runs in the unmodified environment**, so "it worked normally,
+then stopped in the declared way" remains the standard — a tool that is simply
+broken cannot pass as one that refuses. The verdict names the change that proved it:
+
+```
+REFUSES  uploader  proven: worked normally, then stopped with exit 2 and said so
+                   (with GOOGLE_APPLICATION_CREDENTIALS unset)
+```
+
+A value of `""` means present-but-empty, which is a different condition from absent;
+`unset_env:` is how you say the second.
+
+One practical note on a replaced `PATH`: the shell hullcheck starts is found on the
+ambient `PATH`, so the command always runs — but anything the command itself looks
+up is subject to the new `PATH`. Prefer `./tool.sh` over `sh tool.sh` there, or exit
+127 will be reported as a crash rather than a refusal, which is what it is.
+
 ### UNPROVABLE: the verdict hullcheck could not earn
 
 Without `needs_git`, a command whose condition is a git fact runs in a copy where

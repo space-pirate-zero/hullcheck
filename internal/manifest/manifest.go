@@ -110,6 +110,16 @@ type Refusal struct {
 	// happily and is reported as proceeding under a condition that was never
 	// created.
 	NeedsGit bool `json:"needs_git,omitempty"`
+	// Env replaces or adds environment variables for the run that should refuse,
+	// and UnsetEnv removes them. Most conditions an unattended tool refuses on
+	// are environmental - a required binary missing from PATH, a credential
+	// expired or absent - and none of them can be created by writing or deleting
+	// a file inside the copy.
+	//
+	// The control still runs in the unmodified environment, so "it worked
+	// normally, then stopped in the declared way" remains the standard.
+	Env      map[string]string `json:"env,omitempty"`
+	UnsetEnv []string          `json:"unset_env,omitempty"`
 }
 
 // Provenance declares what counts as a provenance record for a set of artifacts.
@@ -244,7 +254,31 @@ func Parse(r io.Reader) (*File, error) {
 	if err := checkDuplicates(out.Rules); err != nil {
 		return nil, err
 	}
+	if err := checkEnv(out.Refusals); err != nil {
+		return nil, err
+	}
 	return out, nil
+}
+
+// checkEnv refuses a refusal that both sets and unsets the same variable.
+//
+// It is a manifest that says two opposite things, and resolving it silently
+// either way means auditing a tool under a condition its author did not
+// declare - which is how a PROCEEDS gets manufactured out of a typo.
+func checkEnv(rs []Refusal) error {
+	for i, r := range rs {
+		for _, k := range r.UnsetEnv {
+			if !validEnvName(k) {
+				return fmt.Errorf("refusal %d: unset_env: %q is not an environment"+
+					" variable name (letters, digits and underscore, not starting with a digit)", i+1, k)
+			}
+			if _, both := r.Env[k]; both {
+				return fmt.Errorf("refusal %d: %s is in both env: and unset_env:,"+
+					" so nothing says whether it should be present or absent", i+1, k)
+			}
+		}
+	}
+	return nil
 }
 
 // checkDuplicates refuses two declarations that address the same rule.
@@ -340,6 +374,14 @@ func assignRefusal(r *Refusal, kv string, line int) error {
 		r.ExpectOutput = v
 	case "needs_git":
 		r.NeedsGit = v == "true"
+	case "env":
+		m, err := splitMap(v)
+		if err != nil {
+			return fmt.Errorf("line %d: env: %w", line, err)
+		}
+		r.Env = m
+	case "unset_env":
+		r.UnsetEnv = splitList(v)
 	default:
 		return fmt.Errorf("line %d: unknown refusal key %q", line, k)
 	}
@@ -364,6 +406,81 @@ func assignProv(p *Provenance, kv string, line int) error {
 		return fmt.Errorf("line %d: unknown provenance key %q", line, k)
 	}
 	return nil
+}
+
+// splitMap reads an inline mapping: { PATH: "/usr/bin:/bin", TOKEN: "" }.
+//
+// Quoted values may contain commas and colons, which a PATH usually does. A key
+// with no value is rejected rather than guessed at: "present but empty" and
+// "absent" are different conditions, and unset_env is how you say the second.
+func splitMap(v string) (map[string]string, error) {
+	t := strings.TrimSpace(v)
+	if !strings.HasPrefix(t, "{") || !strings.HasSuffix(t, "}") {
+		return nil, fmt.Errorf("expected an inline mapping like { PATH: \"/usr/bin:/bin\" }, got %q", v)
+	}
+	t = strings.TrimSpace(t[1 : len(t)-1])
+	if t == "" {
+		return map[string]string{}, nil
+	}
+	out := map[string]string{}
+	for _, pair := range splitOutsideQuotes(t, ',') {
+		k, val, ok := strings.Cut(pair, ":")
+		if !ok {
+			return nil, fmt.Errorf("%q is not KEY: VALUE", strings.TrimSpace(pair))
+		}
+		k = strings.TrimSpace(strings.Trim(strings.TrimSpace(k), `"'`))
+		if !validEnvName(k) {
+			return nil, fmt.Errorf("%q is not an environment variable name"+
+				" (letters, digits and underscore, not starting with a digit)", k)
+		}
+		val = strings.TrimSpace(val)
+		if len(val) >= 2 && strings.HasPrefix(val, `"`) && strings.HasSuffix(val, `"`) {
+			val = unescape(val[1 : len(val)-1])
+		}
+		out[k] = val
+	}
+	return out, nil
+}
+
+// validEnvName reports whether a shell could read this variable back. A name it
+// could not - "MY VAR", "2FA" - would be written into the environment, read by
+// nothing, and the refusal would be audited under a condition that was never
+// created. Refusing it is the same choice this parser makes about unknown keys.
+func validEnvName(k string) bool {
+	if k == "" || (k[0] >= '0' && k[0] <= '9') {
+		return false
+	}
+	for i := 0; i < len(k); i++ {
+		c := k[i]
+		if c != '_' && (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') {
+			return false
+		}
+	}
+	return true
+}
+
+// splitOutsideQuotes splits on sep, ignoring separators inside double quotes, so
+// a quoted PATH keeps its commas.
+func splitOutsideQuotes(s string, sep byte) []string {
+	var out []string
+	var b strings.Builder
+	inQuote := false
+	for i := 0; i < len(s); i++ {
+		switch {
+		case s[i] == '"' && (i == 0 || s[i-1] != '\\'):
+			inQuote = !inQuote
+			b.WriteByte(s[i])
+		case s[i] == sep && !inQuote:
+			out = append(out, b.String())
+			b.Reset()
+		default:
+			b.WriteByte(s[i])
+		}
+	}
+	if strings.TrimSpace(b.String()) != "" {
+		out = append(out, b.String())
+	}
+	return out
 }
 
 // splitList reads an inline list: [a, b, c].

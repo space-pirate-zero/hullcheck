@@ -400,3 +400,69 @@ func TestWritingOverADirectoryExplainsItself(t *testing.T) {
 		t.Errorf("the error must name the way out: %v", err)
 	}
 }
+
+// A condition the copy cannot hold - a variable gone, a PATH replaced - is the
+// one most unattended tools actually refuse on.
+func TestRunWithChangesTheEnvironment(t *testing.T) {
+	t.Setenv("HC_PROBE", "ambient")
+	d, err := Empty()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	got, err := d.Run("echo ${HC_PROBE:-gone}", 10*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got.Output, "ambient") {
+		t.Errorf("Run must inherit the ambient environment, got %q", got.Output)
+	}
+
+	got, err = d.RunWith("echo ${HC_PROBE:-gone}", 10*time.Second, Env{Unset: []string{"HC_PROBE"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got.Output, "gone") {
+		t.Errorf("unset must remove the variable, got %q", got.Output)
+	}
+
+	got, err = d.RunWith("echo [$HC_PROBE]", 10*time.Second,
+		Env{Set: map[string]string{"HC_PROBE": ""}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Present but empty is a different condition from absent, and the parser
+	// keeps them apart, so the runner must too.
+	if !strings.Contains(got.Output, "[]") {
+		t.Errorf("an empty value must be present and empty, got %q", got.Output)
+	}
+}
+
+// The shell itself is found on the ambient PATH, so replacing PATH removes what
+// the command can reach without making the command unrunnable.
+func TestReplacingPathStillRunsTheCommand(t *testing.T) {
+	d, err := Empty()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	got, err := d.RunWith("echo still here", 10*time.Second,
+		Env{Set: map[string]string{"PATH": "/nonexistent"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got.Output, "still here") {
+		t.Errorf("the shell must still start, got exit %d: %q", got.Exit, got.Output)
+	}
+}
+
+func TestEnvDescribe(t *testing.T) {
+	e := Env{Set: map[string]string{"PATH": "/bin", "AWS_PROFILE": "x"}, Unset: []string{"TOKEN"}}
+	if got, want := e.Describe(), "AWS_PROFILE set, PATH set, TOKEN unset"; got != want {
+		t.Errorf("Describe = %q, want %q", got, want)
+	}
+	if !(Env{}).Empty() || e.Empty() {
+		t.Error("Empty is wrong")
+	}
+}
