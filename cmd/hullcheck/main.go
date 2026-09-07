@@ -381,9 +381,20 @@ func driftMode(root, since string, stdout, stderr io.Writer) int {
 }
 
 // parse reads flags and positional words in any order, so a global flag may sit
-// on either side of the `diff` subcommand. Go's flag package stops at the first
+// on either side of the diff subcommand. Go's flag package stops at the first
 // non-flag argument; resuming after each one is what lets the two mix.
+//
+// "--" still ends the flags for good. Resuming past it would take a path that
+// begins with a dash and read it as a flag, which is the one thing "--" exists to
+// prevent, and it would leave no way to name such a path at all.
 func parse(fs *flag.FlagSet, args []string) ([]string, error) {
+	var literal []string
+	for i, a := range args {
+		if a == "--" {
+			args, literal = args[:i], args[i+1:]
+			break
+		}
+	}
 	var words []string
 	rest := args
 	for {
@@ -391,7 +402,7 @@ func parse(fs *flag.FlagSet, args []string) ([]string, error) {
 			return nil, err
 		}
 		if fs.NArg() == 0 {
-			return words, nil
+			return append(words, literal...), nil
 		}
 		words = append(words, fs.Arg(0))
 		rest = fs.Args()[1:]

@@ -496,3 +496,25 @@ func TestTwoPathsAreRefused(t *testing.T) {
 		t.Errorf("errOut = %s", errOut)
 	}
 }
+
+// "--" ends the flags for good. Resuming past it would read a path that begins
+// with a dash as a flag, which is the one thing it exists to prevent.
+func TestDoubleDashEndsTheFlags(t *testing.T) {
+	root := gated(t)
+	code, out, _ := run(t, "--no-banner", "--", root)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0\n%s", code, out)
+	}
+	if !strings.Contains(out, "HULLCHECK reading") {
+		t.Errorf("a plain reading was expected:\n%s", out)
+	}
+	// A dash-shaped word after "--" is a path, not a flag, so two of them is
+	// two paths.
+	code, out, errOut := run(t, "--no-banner", "--", root, "--json")
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2\n%s%s", code, out, errOut)
+	}
+	if !strings.Contains(errOut, "one path at a time") {
+		t.Errorf("--json after -- was parsed as a flag:\n%s%s", out, errOut)
+	}
+}
