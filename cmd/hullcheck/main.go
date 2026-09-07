@@ -104,7 +104,7 @@ func execute(args []string, stdout, stderr io.Writer) int {
 		doProv    = fs.Bool("provenance", false, "audit artifact provenance")
 		scratchAt = fs.String("scratch-dir", "", "create scratch copies here")
 		maxCopy   = fs.String("max-copy", "", "refuse to copy more than this many bytes")
-		maxFiles  = fs.Int("max-files", 0, "refuse to copy more than this many files")
+		maxFiles  = fs.String("max-files", "", "refuse to copy more than this many files")
 		planOnly  = fs.Bool("scratch-plan", false, "measure what would be copied, and copy nothing")
 	)
 	fs.Usage = func() { fmt.Fprint(stderr, usage) }
@@ -490,7 +490,7 @@ func truncate(s string, n int) string {
 // scratchOptions turns the copy flags into limits. A user who has looked at the
 // measurement and decided it is fine writes 0, which means no limit - the escape
 // hatch has to exist, or the refusal becomes a wall.
-func scratchOptions(dir, maxCopy string, maxFiles int) (scratch.Options, error) {
+func scratchOptions(dir, maxCopy, maxFiles string) (scratch.Options, error) {
 	opt := scratch.Options{Dir: dir}
 	if dir != "" {
 		st, err := os.Stat(dir)
@@ -511,11 +511,20 @@ func scratchOptions(dir, maxCopy string, maxFiles int) (scratch.Options, error) 
 			opt.MaxBytes = -1
 		}
 	}
-	switch {
-	case maxFiles < 0:
-		return opt, fmt.Errorf("--max-files: %d is negative", maxFiles)
-	case maxFiles > 0:
-		opt.MaxFiles = maxFiles
+	// Unset and zero must stay distinguishable: zero is the documented way to
+	// remove the limit, and an int flag defaulting to zero would swallow it.
+	if maxFiles != "" {
+		n, err := strconv.Atoi(strings.TrimSpace(maxFiles))
+		if err != nil {
+			return opt, fmt.Errorf("--max-files: %q is not a number", maxFiles)
+		}
+		if n < 0 {
+			return opt, fmt.Errorf("--max-files: %d is negative", n)
+		}
+		opt.MaxFiles = n
+		if n == 0 {
+			opt.MaxFiles = -1
+		}
 	}
 	// A byte limit lifted deliberately lifts the file count with it: someone who
 	// asked for an unbounded copy did not mean "unbounded, but only 200000 files".

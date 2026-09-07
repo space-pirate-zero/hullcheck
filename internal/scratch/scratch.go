@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -247,6 +248,13 @@ func plan(src string, opt Options) ([]entry, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
+	// An empty answer from git is not proof of an empty directory: a subtree
+	// that is itself gitignored lists nothing, and copying nothing would fail
+	// every gate's control run for a reason the output could not explain. Fall
+	// back to the walk and let the size limits deal with the cost.
+	if tracked && len(files) == 0 {
+		tracked = false
+	}
 	if !tracked {
 		files, err = listWalk(src)
 		if err != nil {
@@ -429,7 +437,18 @@ func ParseSize(s string) (int64, error) {
 	if v < 0 {
 		return 0, fmt.Errorf("%q is negative", s)
 	}
-	return int64(v * float64(m)), nil
+	// Go leaves an out-of-range float-to-int conversion implementation-defined,
+	// and on amd64 it produces the most negative int64 - which the limits read as
+	// "no limit". A typo must never silently switch the cap off, so the range is
+	// checked before the conversion, not after.
+	if v > float64(math.MaxInt64)/float64(m) {
+		return 0, fmt.Errorf("%q is larger than this machine can count in bytes", s)
+	}
+	n := int64(v * float64(m))
+	if n == 0 && v != 0 {
+		return 0, fmt.Errorf("%q rounds to zero bytes, and zero means no limit", s)
+	}
+	return n, nil
 }
 
 // humanBytes renders a byte count the way the refusal message needs to read.

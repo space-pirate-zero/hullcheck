@@ -310,9 +310,42 @@ func TestParseSize(t *testing.T) {
 			t.Errorf("ParseSize(%q) = %d, want %d", in, got, want)
 		}
 	}
-	for _, bad := range []string{"", "big", "12PB", "-4MB", "MB"} {
+	// An out-of-range value must be an error, never an implementation-defined
+	// int64 that the limits would read as "no limit".
+	for _, bad := range []string{"", "big", "12PB", "-4MB", "MB",
+		"99999999999999TB", "0.4"} {
 		if _, err := ParseSize(bad); err == nil {
 			t.Errorf("ParseSize(%q) should have failed", bad)
 		}
+	}
+}
+
+// A gitignored subtree lists nothing, and an empty copy would fail every control
+// run for a reason the output could not explain.
+func TestAnEmptyGitListingFallsBackToWalking(t *testing.T) {
+	hasGit(t)
+	root := t.TempDir()
+	for _, n := range []string{".gitignore", "inner/thing.txt"} {
+		p := filepath.Join(root, filepath.FromSlash(n))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("inner/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitInit(t, root)
+
+	inner := filepath.Join(root, "inner")
+	d, err := Copy(inner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if _, err := os.Stat(filepath.Join(d.Path, "thing.txt")); err != nil {
+		t.Error("a gitignored subtree must still be copied, by walking it")
 	}
 }
