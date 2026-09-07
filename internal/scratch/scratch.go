@@ -89,6 +89,11 @@ type Options struct {
 	// looked at the number and decided it is fine.
 	MaxBytes int64
 	MaxFiles int
+	// IncludeGit copies .git as well, for a gate or refusal that reads git
+	// history, tracked-file state, or whether the checkout is a worktree.
+	// Off by default: .git is often the largest thing in a repository and most
+	// commands under test have no use for it.
+	IncludeGit bool
 }
 
 func (o Options) maxBytes() int64 {
@@ -189,6 +194,13 @@ func (d *Dir) Write(rel, body string) error {
 	if err := os.MkdirAll(filepath.Dir(p), 0o750); err != nil {
 		return err
 	}
+	// Writing a file where a directory stands is a manifest mistake with an
+	// unreadable error, and it has one common cause: simulating a linked
+	// worktree by replacing a copied .git directory with a .git file.
+	if st, serr := os.Lstat(p); serr == nil && st.IsDir() {
+		return fmt.Errorf("%s is a directory in the copy, so a file cannot be written over it"+
+			" - use remove: %q first if that is what you meant", rel, rel)
+	}
 	return os.WriteFile(p, []byte(body), 0o600)
 }
 
@@ -261,6 +273,13 @@ func plan(src string, opt Options) ([]entry, bool, error) {
 			return nil, false, err
 		}
 	}
+	if opt.IncludeGit {
+		g, gerr := listGit(src)
+		if gerr != nil {
+			return nil, tracked, gerr
+		}
+		files = append(files, g...)
+	}
 	var total int64
 	for _, f := range files {
 		total += f.size
@@ -311,6 +330,49 @@ func listTracked(src string) ([]entry, bool, error) {
 		files = append(files, entry{rel: name, size: st.Size()})
 	}
 	return files, true, nil
+}
+
+// listGit lists .git itself, which every other path in this package skips.
+//
+// It is copied verbatim, including the case where .git is a file rather than a
+// directory. Rewriting that file to point back at the original repository would
+// let a command under test write into the repository hullcheck is reading, and
+// "never writes to your repo" is not a guarantee worth trading for a verdict. A
+// linked worktree therefore arrives with a gitdir pointer that goes nowhere:
+// enough for a tool that asks whether it is in a worktree, not enough for one
+// that reads history, which then fails honestly rather than passing quietly.
+func listGit(src string) ([]entry, error) {
+	dot := filepath.Join(src, ".git")
+	st, err := os.Lstat(dot)
+	if err != nil {
+		return nil, nil //nolint:nilerr // no .git is not an error, it is a fact
+	}
+	if st.Mode().IsRegular() {
+		return []entry{{rel: ".git", size: st.Size()}}, nil
+	}
+	if !st.IsDir() {
+		return nil, nil
+	}
+	var out []entry
+	err = filepath.WalkDir(dot, func(p string, d fs.DirEntry, werr error) error {
+		if werr != nil {
+			return nil //nolint:nilerr
+		}
+		if d.IsDir() || !d.Type().IsRegular() {
+			return nil
+		}
+		rel, rerr := filepath.Rel(src, p)
+		if rerr != nil {
+			return nil //nolint:nilerr
+		}
+		info, ierr := d.Info()
+		if ierr != nil {
+			return nil //nolint:nilerr
+		}
+		out = append(out, entry{rel: filepath.ToSlash(rel), size: info.Size()})
+		return nil
+	})
+	return out, err
 }
 
 // listWalk is the fallback for a directory that is not a git work tree.

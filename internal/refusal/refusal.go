@@ -36,6 +36,16 @@ const (
 	// Broken: it failed in the control too, or it failed differently from the way
 	// it declared. A crash with the right exit code is not a considered refusal.
 	Broken Verdict = "BROKEN"
+	// Unprovable: the condition could not be created in the scratch copy, so the
+	// tool was never actually put in the situation it claims to refuse.
+	//
+	// This exists because the alternative is a false PROCEEDS, and PROCEEDS is
+	// the finding this whole audit is for. A refusal whose condition is a git
+	// fact cannot fire in a copy with no .git: the tool runs happily, and
+	// reporting "it ran anyway under a condition it claims to refuse" would send
+	// someone to fix a refusal that is correct and load-bearing. A verdict the
+	// audit cannot earn must not be emitted as though it had been.
+	Unprovable Verdict = "UNPROVABLE"
 )
 
 // Result is one audited refusal.
@@ -77,9 +87,27 @@ func rank(v Verdict) int {
 		return 0
 	case Broken:
 		return 1
-	default:
+	case Unprovable:
 		return 2
+	default:
+		return 3
 	}
+}
+
+// needsGit reports whether a refusal turns on a git fact, from the command it
+// runs and from the condition as its author described it. Word-boundary
+// matching, so "digit" and "gitignore" do not trigger it.
+func needsGit(r manifest.Refusal) bool {
+	for _, f := range strings.FieldsFunc(strings.ToLower(r.Run+" "+r.When),
+		func(c rune) bool {
+			return !(c >= 'a' && c <= 'z') && !(c >= '0' && c <= '9')
+		}) {
+		switch f {
+		case "git", "worktree", "worktrees":
+			return true
+		}
+	}
+	return false
 }
 
 func prove(r manifest.Refusal, opt Options) (Result, error) {
@@ -87,9 +115,17 @@ func prove(r manifest.Refusal, opt Options) (Result, error) {
 		return Result{r.Tool, r.When, Broken, "no command declared, so nothing can be proven"}, nil
 	}
 
+	// A condition that turns on a git fact cannot exist in a copy with no .git.
+	// Everything below still runs - a tool that refuses anyway has proven it -
+	// but PROCEEDS and a failed control are downgraded to UNPROVABLE, because
+	// neither of them is a finding about the tool.
+	blind := !r.NeedsGit && needsGit(r)
+	sopt := opt.Scratch
+	sopt.IncludeGit = r.NeedsGit
+
 	// CONTROL: the tool must work when the condition is absent. Without this, a
 	// tool that is simply broken looks exactly like one that refuses correctly.
-	ctl, err := scratch.CopyWith(opt.Root, opt.Scratch)
+	ctl, err := scratch.CopyWith(opt.Root, sopt)
 	if err != nil {
 		return Result{}, err
 	}
@@ -102,6 +138,12 @@ func prove(r manifest.Refusal, opt Options) (Result, error) {
 		return Result{r.Tool, r.When, Broken, "the tool hangs even without the condition present"}, nil
 	}
 	if base.Exit != 0 {
+		if blind {
+			return Result{r.Tool, r.When, Unprovable, fmt.Sprintf(
+				"the condition is a git fact and the scratch copy has no .git, and the tool"+
+					" already fails (exit %d) without it - add needs_git: true to audit this refusal",
+				base.Exit)}, nil
+		}
 		return Result{r.Tool, r.When, Broken, fmt.Sprintf(
 			"the tool already fails (exit %d) without the condition, so its refusal cannot be told apart from being broken",
 			base.Exit)}, nil
@@ -110,9 +152,9 @@ func prove(r manifest.Refusal, opt Options) (Result, error) {
 	// TREATMENT: create the condition and run again.
 	var dir *scratch.Dir
 	if r.EmptyDir {
-		dir, err = scratch.EmptyWith(opt.Scratch)
+		dir, err = scratch.EmptyWith(sopt)
 	} else {
-		dir, err = scratch.CopyWith(opt.Root, opt.Scratch)
+		dir, err = scratch.CopyWith(opt.Root, sopt)
 	}
 	if err != nil {
 		return Result{}, err
@@ -136,6 +178,14 @@ func prove(r manifest.Refusal, opt Options) (Result, error) {
 	switch {
 	case got.TimedOut:
 		return Result{r.Tool, r.When, Broken, "the tool hung instead of refusing"}, nil
+	case got.Exit == 0 && blind:
+		// The sharp case. Without this the audit reports its most valuable
+		// finding about a refusal that is correct, and someone goes and
+		// "fixes" a check that has already prevented a real incident.
+		return Result{r.Tool, r.When, Unprovable,
+			"the tool ran to success, but the condition is a git fact and the scratch copy" +
+				" has no .git, so it was never put in the situation it claims to refuse" +
+				" - add needs_git: true to audit this refusal"}, nil
 	case got.Exit == 0:
 		return Result{r.Tool, r.When, Proceeds,
 			"the tool ran to success under a condition it claims to refuse - a silent downgrade"}, nil
@@ -163,7 +213,7 @@ func prove(r manifest.Refusal, opt Options) (Result, error) {
 
 // Counts summarises an audit.
 func Counts(rs []Result) map[Verdict]int {
-	c := map[Verdict]int{Refuses: 0, Proceeds: 0, Broken: 0}
+	c := map[Verdict]int{Refuses: 0, Proceeds: 0, Broken: 0, Unprovable: 0}
 	for _, r := range rs {
 		c[r.Verdict]++
 	}

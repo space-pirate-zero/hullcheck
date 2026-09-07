@@ -349,3 +349,54 @@ func TestAnEmptyGitListingFallsBackToWalking(t *testing.T) {
 		t.Error("a gitignored subtree must still be copied, by walking it")
 	}
 }
+
+// Nothing under test can see git history unless it asks, and when it asks it must
+// actually get it.
+func TestIncludeGitCopiesTheRepository(t *testing.T) {
+	hasGit(t)
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitInit(t, root)
+
+	plain, err := Copy(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer plain.Close()
+	if _, err := os.Stat(filepath.Join(plain.Path, ".git")); !os.IsNotExist(err) {
+		t.Error(".git must stay out of the copy by default")
+	}
+
+	withGit, err := CopyWith(root, Options{IncludeGit: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer withGit.Close()
+	got, err := withGit.Run("git rev-parse --is-inside-work-tree", 30*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Exit != 0 {
+		t.Errorf("the copied .git must be a usable repository, got exit %d: %s", got.Exit, got.Output)
+	}
+}
+
+// Writing a file where a directory stands has one common cause - simulating a
+// linked worktree over a copied .git - and it deserves better than a raw
+// "is a directory" from the operating system.
+func TestWritingOverADirectoryExplainsItself(t *testing.T) {
+	d, err := Copy(seed(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	err = d.Write("sub", "x")
+	if err == nil {
+		t.Fatal("expected an error writing a file over a directory")
+	}
+	if !strings.Contains(err.Error(), "remove:") {
+		t.Errorf("the error must name the way out: %v", err)
+	}
+}

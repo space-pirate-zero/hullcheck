@@ -19,6 +19,11 @@ const (
 	// without a control run it is indistinguishable from a gate that works.
 	// An always-red gate gets disabled by the third person who hits it.
 	Broken Verdict = "BROKEN"
+	// Unprovable: hullcheck could not create the conditions the gate needs, so
+	// it reached no verdict about the gate at all. Distinct from BROKEN, which
+	// is a finding about the gate; this is a finding about the experiment. A
+	// verdict the tool cannot earn must not be emitted as though it had been.
+	Unprovable Verdict = "UNPROVABLE"
 )
 
 // Severity is how expensive a violation is, as declared by the repo.
@@ -189,7 +194,7 @@ type Report struct {
 
 // Counts summarises verdicts.
 func (r Report) Counts() map[Verdict]int {
-	c := map[Verdict]int{Hold: 0, Breach: 0, Fake: 0, Broken: 0}
+	c := map[Verdict]int{Hold: 0, Breach: 0, Fake: 0, Broken: 0, Unprovable: 0}
 	for _, f := range r.Findings {
 		c[f.Verdict]++
 	}
