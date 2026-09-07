@@ -247,3 +247,31 @@ func TestBadEnvIsRefusedNotGuessed(t *testing.T) {
 		}
 	}
 }
+
+// A declaration that cannot mean anything must be refused, not written into an
+// environment where nothing can read it back.
+func TestUnusableEnvNamesAreRefused(t *testing.T) {
+	for name, in := range map[string]string{
+		"a space":       "version: 1\nrefusals:\n  - tool: t\n    env: { MY VAR: x }\n",
+		"leading digit": "version: 1\nrefusals:\n  - tool: t\n    env: { 2FA: x }\n",
+		"punctuation":   "version: 1\nrefusals:\n  - tool: t\n    env: { \"A-B\": x }\n",
+		"in unset_env":  "version: 1\nrefusals:\n  - tool: t\n    unset_env: [MY VAR]\n",
+	} {
+		if _, err := Parse(strings.NewReader(in)); err == nil {
+			t.Errorf("%s: expected an error", name)
+		}
+	}
+}
+
+// Setting and unsetting the same variable says two opposite things, and picking
+// one silently audits a tool under a condition its author did not declare.
+func TestAVariableInBothEnvAndUnsetEnvIsRefused(t *testing.T) {
+	_, err := Parse(strings.NewReader("version: 1\nrefusals:\n  - tool: t\n" +
+		"    env: { TOKEN: \"x\" }\n    unset_env: [TOKEN]\n"))
+	if err == nil {
+		t.Fatal("expected a refusal")
+	}
+	if !strings.Contains(err.Error(), "TOKEN") {
+		t.Errorf("the error must name the variable: %v", err)
+	}
+}

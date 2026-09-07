@@ -254,7 +254,31 @@ func Parse(r io.Reader) (*File, error) {
 	if err := checkDuplicates(out.Rules); err != nil {
 		return nil, err
 	}
+	if err := checkEnv(out.Refusals); err != nil {
+		return nil, err
+	}
 	return out, nil
+}
+
+// checkEnv refuses a refusal that both sets and unsets the same variable.
+//
+// It is a manifest that says two opposite things, and resolving it silently
+// either way means auditing a tool under a condition its author did not
+// declare - which is how a PROCEEDS gets manufactured out of a typo.
+func checkEnv(rs []Refusal) error {
+	for i, r := range rs {
+		for _, k := range r.UnsetEnv {
+			if !validEnvName(k) {
+				return fmt.Errorf("refusal %d: unset_env: %q is not an environment"+
+					" variable name (letters, digits and underscore, not starting with a digit)", i+1, k)
+			}
+			if _, both := r.Env[k]; both {
+				return fmt.Errorf("refusal %d: %s is in both env: and unset_env:,"+
+					" so nothing says whether it should be present or absent", i+1, k)
+			}
+		}
+	}
+	return nil
 }
 
 // checkDuplicates refuses two declarations that address the same rule.
@@ -405,8 +429,9 @@ func splitMap(v string) (map[string]string, error) {
 			return nil, fmt.Errorf("%q is not KEY: VALUE", strings.TrimSpace(pair))
 		}
 		k = strings.TrimSpace(strings.Trim(strings.TrimSpace(k), `"'`))
-		if k == "" || strings.ContainsAny(k, "=\x00") {
-			return nil, fmt.Errorf("%q is not a usable variable name", k)
+		if !validEnvName(k) {
+			return nil, fmt.Errorf("%q is not an environment variable name"+
+				" (letters, digits and underscore, not starting with a digit)", k)
 		}
 		val = strings.TrimSpace(val)
 		if len(val) >= 2 && strings.HasPrefix(val, `"`) && strings.HasSuffix(val, `"`) {
@@ -415,6 +440,23 @@ func splitMap(v string) (map[string]string, error) {
 		out[k] = val
 	}
 	return out, nil
+}
+
+// validEnvName reports whether a shell could read this variable back. A name it
+// could not - "MY VAR", "2FA" - would be written into the environment, read by
+// nothing, and the refusal would be audited under a condition that was never
+// created. Refusing it is the same choice this parser makes about unknown keys.
+func validEnvName(k string) bool {
+	if k == "" || (k[0] >= '0' && k[0] <= '9') {
+		return false
+	}
+	for i := 0; i < len(k); i++ {
+		c := k[i]
+		if c != '_' && (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') {
+			return false
+		}
+	}
+	return true
 }
 
 // splitOutsideQuotes splits on sep, ignoring separators inside double quotes, so

@@ -246,6 +246,8 @@ type Env struct {
 	// which is a different condition from absent.
 	Set map[string]string
 	// Unset removes variables, for the common "the credential is not there".
+	// A name in both Set and Unset is a contradiction the manifest parser
+	// refuses, so apply need not choose between them.
 	Unset []string
 }
 
