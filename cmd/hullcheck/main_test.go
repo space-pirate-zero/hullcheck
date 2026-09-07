@@ -318,3 +318,62 @@ func TestAmbiguousDeclarationIsReportedNotGuessed(t *testing.T) {
 		t.Errorf("the ambiguity must be reported:\n%s", errOut)
 	}
 }
+
+// Issue #3: a manifest rule the scanner never produced was proven, logged, and
+// then absent from the report and from the coverage number. In verified mode the
+// manifest is authoritative, so it lands in both.
+func TestVerifyCountsARuleDiscoveryDidNotFind(t *testing.T) {
+	root := repo(t, map[string]string{
+		"RULES.md":            "1.1 Every asset must record its provenance.\n",
+		"check_provenance.sh": "exit 0\n",
+		// RULES-1.6 is nowhere in RULES.md: the clause it refers to is one the
+		// scanner skips. Declaring it must still count.
+		".hullcheck.yml": "version: 1\nrules:\n" +
+			"  - id: RULES-1.6\n    source: RULES.md\n" +
+			"    statement: \"hullcheck must never write to the repository it reads\"\n" +
+			"    severity: high\n",
+	})
+	code, out, errOut := run(t, "--no-banner", "--json", "--verify", root)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0\n%s", code, errOut)
+	}
+	var rep struct {
+		Findings []struct {
+			Rule struct {
+				ID string `json:"id"`
+			} `json:"rule"`
+			Verdict string `json:"verdict"`
+		} `json:"findings"`
+		Docs []string `json:"policy_documents"`
+	}
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	var found bool
+	for _, f := range rep.Findings {
+		if f.Rule.ID == "RULES-1.6" {
+			found = true
+			if f.Verdict != "BREACH" {
+				t.Errorf("verdict = %q, want the declaration's BREACH (it declares no gate)", f.Verdict)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("a declared rule was proven and then dropped from the reading:\n%s", out)
+	}
+	if len(rep.Findings) != 2 {
+		t.Errorf("got %d findings, want the discovered rule and the declared one", len(rep.Findings))
+	}
+	if !strings.Contains(errOut, "discovery did not find") {
+		t.Errorf("a changed denominator must be announced:\n%s", errOut)
+	}
+	var sawManifest bool
+	for _, d := range rep.Docs {
+		if d == ".hullcheck.yml" {
+			sawManifest = true
+		}
+	}
+	if !sawManifest {
+		t.Errorf("the manifest supplied a rule and must be listed as a source: %v", rep.Docs)
+	}
+}

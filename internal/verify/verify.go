@@ -18,6 +18,8 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/space-pirate-zero/hullcheck/internal/manifest"
@@ -34,7 +36,10 @@ type Result struct {
 	// Source is the policy document the declaration named, without any line
 	// number. It is half the rule's identity: an id on its own addresses every
 	// rule that happens to share it.
-	Source  string
+	Source string
+	// Rule is the rule as the manifest declares it, so a proof can be reported
+	// even where discovery never produced a matching rule to fold it into.
+	Rule    model.Rule
 	Verdict model.Verdict
 	Why     string
 }
@@ -75,14 +80,14 @@ func Run(m *manifest.File, opt Options) ([]Result, error) {
 	for _, r := range m.Rules {
 		switch {
 		case r.Gate == nil || r.Gate.Run == "":
-			out = append(out, Result{r.ID, r.SourceFile(), model.Breach,
-				"the manifest declares no gate for this rule"})
+			out = append(out, result(r, model.Breach,
+				"the manifest declares no gate for this rule"))
 			continue
 		case r.Gate.FixturePath == "":
 			// Declared but unprovable. Reported as HOLD, but the wording must not
 			// let a reader mistake a claim for evidence.
-			out = append(out, Result{r.ID, r.SourceFile(), model.Hold,
-				"gate declared but not proven: add fixture_path to prove it fails when the rule is broken"})
+			out = append(out, result(r, model.Hold,
+				"gate declared but not proven: add fixture_path to prove it fails when the rule is broken"))
 			continue
 		}
 		res, err := proveOne(abs, r, opt)
@@ -116,14 +121,14 @@ func proveOne(root string, r manifest.Rule, opt Options) (Result, error) {
 		return Result{}, err
 	}
 	if clean.TimedOut {
-		return Result{r.ID, r.SourceFile(), model.Broken, fmt.Sprintf(
+		return result(r, model.Broken, fmt.Sprintf(
 			"the gate did not finish with the rule intact, so it decides nothing"+
-				" - check that %q terminates", r.Gate.Run)}, nil
+				" - check that %q terminates", r.Gate.Run)), nil
 	}
 	if clean.Exit != 0 {
-		return Result{r.ID, r.SourceFile(), model.Broken, fmt.Sprintf(
+		return result(r, model.Broken, fmt.Sprintf(
 			"the gate fails (exit %d) even with the rule intact, so it discriminates nothing"+
-				" - check that %q can run", clean.Exit, r.Gate.Run)}, nil
+				" - check that %q can run", clean.Exit, r.Gate.Run)), nil
 	}
 
 	// TREATMENT: break the rule.
@@ -142,22 +147,57 @@ func proveOne(root string, r manifest.Rule, opt Options) (Result, error) {
 	if broken.TimedOut {
 		// A hang is not a catch. Reading it as one would manufacture a HOLD out
 		// of a gate that never reached a verdict.
-		return Result{r.ID, r.SourceFile(), model.Broken, fmt.Sprintf(
+		return result(r, model.Broken, fmt.Sprintf(
 			"the gate passed with the rule intact but did not finish once it was broken,"+
-				" so it never reached a verdict - check that %q terminates", r.Gate.Run)}, nil
+				" so it never reached a verdict - check that %q terminates", r.Gate.Run)), nil
 	}
 	if broken.Exit != 0 {
-		return Result{r.ID, r.SourceFile(), model.Hold, fmt.Sprintf(
+		return result(r, model.Hold, fmt.Sprintf(
 			"proven: the gate passed with the rule intact and failed (exit %d) when it was broken",
-			broken.Exit)}, nil
+			broken.Exit)), nil
 	}
-	return Result{r.ID, r.SourceFile(), model.Fake,
-		"the gate passed even with the rule broken - a patch that is only paint"}, nil
+	return result(r, model.Fake,
+		"the gate passed even with the rule broken - a patch that is only paint"), nil
 }
 
-// Apply folds verification results into a reading, replacing matched verdicts with
-// proven ones. It returns whatever it could not apply, in words, because a
-// declaration that quietly reaches nothing is the failure mode this addresses.
+// result carries the declaration alongside the verdict. Keeping the declared
+// statement and severity here is what lets Apply report a rule discovery never
+// found, instead of proving it and then dropping it on the floor.
+func result(r manifest.Rule, v model.Verdict, why string) Result {
+	src := r.Source
+	if src == "" {
+		src = manifest.Name
+	}
+	sev := model.Severity(strings.ToLower(strings.TrimSpace(r.Severity)))
+	switch sev {
+	case model.High, model.Medium, model.Low:
+	default:
+		sev = model.Unknown
+	}
+	stmt := r.Statement
+	if stmt == "" {
+		stmt = "declared in " + manifest.Name + " with no statement"
+	}
+	return Result{
+		RuleID: r.ID, Source: r.SourceFile(),
+		Rule: model.Rule{
+			ID: r.ID, Source: src, File: r.SourceFile(),
+			Statement: stmt, Severity: sev,
+		},
+		Verdict: v, Why: why,
+	}
+}
+
+// Apply folds verification results into a reading. In verified mode the manifest
+// is authoritative: the reading is the manifest's set of rules unioned with
+// discovery's, not the intersection.
+//
+// Intersecting is what made a proof worthless. A rule the scanner never produced
+// was verified, logged, and then absent from the report and from the coverage
+// number - so declaring an accurate link could not correct an inflated reading,
+// and a gate that had genuinely been proven need not move the score. A declared
+// rule now counts whether or not discovery found it, and rules only discovery
+// found are still reported, because unlogged surprises are the point.
 //
 // A rule is addressed by its source document and its id together. Matching on the
 // id alone credits every rule that happens to share it: ids come from the clause
@@ -166,7 +206,11 @@ func proveOne(root string, r manifest.Rule, opt Options) (Result, error) {
 //
 // A declaration with no source: is still honoured, but only where exactly one rule
 // in the reading carries that id. Where more than one does, nothing is changed and
-// the ambiguity is reported - guessing would be the lie.
+// nothing is added - guessing which rule was meant would be the lie, and adding a
+// third copy would be worse.
+//
+// The returned strings say what happened to every declaration that did not simply
+// fold into a discovered rule.
 func Apply(rep model.Report, res []Result) (model.Report, []string) {
 	byKey := make(map[string]Result, len(res))
 	byID := make(map[string][]Result, len(res))
@@ -209,26 +253,54 @@ func Apply(rep model.Report, res []Result) (model.Report, []string) {
 	// a new way to miss - a typo, a moved document, a leading "./" - and a
 	// declaration that quietly applies to nothing is the failure this change is
 	// about, not a smaller version of it that is acceptable.
+	// Whatever folded into no discovered rule is added, so that proving a gate
+	// always moves the number. The exception is an ambiguous id: there the tool
+	// cannot tell which of several rules was meant, and inventing another is
+	// worse than saying so.
+	added := 0
 	for _, r := range res {
 		if applied[r.Key()] {
 			continue
 		}
-		switch {
-		case r.Source == "" && count[r.RuleID] > 1:
+		if r.Source == "" && count[r.RuleID] > 1 {
 			warn = append(warn, fmt.Sprintf(
 				"%s: %d rules in this repository carry that id and the declaration names no source:,"+
-					" so none of them was changed", r.RuleID, count[r.RuleID]))
-		case r.Source != "" && count[r.RuleID] > 0:
-			warn = append(warn, fmt.Sprintf(
-				"%s: no rule with that id was read from %s, so the declaration changed nothing"+
-					" - check the source: path against the reading", r.RuleID, r.Source))
-		default:
-			warn = append(warn, fmt.Sprintf(
-				"%s: the reading contains no rule with that id, so the declaration changed nothing",
-				r.RuleID))
+					" so none of them was changed and none was added", r.RuleID, count[r.RuleID]))
+			continue
 		}
+		rule := r.Rule
+		if rule.ID == "" {
+			rule = model.Rule{ID: r.RuleID, File: r.Source, Source: r.Source,
+				Statement: "declared in " + manifest.Name, Severity: model.Unknown}
+		}
+		rep.Findings = append(rep.Findings, model.Finding{
+			Rule:    rule,
+			Verdict: r.Verdict,
+			Why: r.Why + " (declared in " + manifest.Name +
+				"; the scanner did not find this rule)",
+		})
+		added++
+	}
+	if added > 0 {
+		warn = append(warn, fmt.Sprintf(
+			"%s declares %d rule(s) discovery did not find; they are counted in this reading",
+			manifest.Name, added))
+		rep.Docs = withManifest(rep.Docs)
 	}
 
 	rep.Verified = true
 	return rep, warn
+}
+
+// withManifest lists the manifest among the documents the rules came from, once,
+// keeping the list sorted so two runs of the same reading agree.
+func withManifest(docs []string) []string {
+	for _, d := range docs {
+		if d == manifest.Name {
+			return docs
+		}
+	}
+	docs = append(docs, manifest.Name)
+	sort.Strings(docs)
+	return docs
 }

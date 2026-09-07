@@ -141,6 +141,29 @@ experiment and a hopeful guess, and it is what makes `FAKE` and `BROKEN` trustwo
 Your repository is never modified: fixtures are applied to a temp copy that is
 removed afterwards.
 
+### In verified mode the manifest is authoritative
+
+The reading is the manifest's rules **unioned** with discovery's, not the
+intersection. A rule you declare counts whether or not the scanner found it, and
+rules only the scanner found are still reported, because unlogged surprises are the
+point.
+
+That is what makes a declaration worth writing. Under an intersection, a rule the
+scanner missed was verified, logged, and then silently absent from the report and
+from the score — so declaring an accurate link could not correct an inflated
+reading, and proving a gate need not move the number.
+
+Rules that came from the manifest alone say so, and the changed denominator is
+announced:
+
+```
+hullcheck: .hullcheck.yml declares 4 rule(s) discovery did not find; they are
+counted in this reading
+```
+
+The one thing it will not do is guess: where a declaration names no `source:` and
+several rules share its id, nothing is changed and nothing is added.
+
 ### `source:` is half a rule's name
 
 A rule id is the clause number plus the document's basename, so a repository with
