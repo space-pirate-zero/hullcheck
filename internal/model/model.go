@@ -122,6 +122,21 @@ type Rule struct {
 	GateHint string `json:"gate_hint,omitempty"`
 }
 
+// Key is the identity of a rule: its clause id, qualified by the document it was
+// read from.
+//
+// An id alone cannot address a rule. Ids are derived from the clause number and
+// the document's basename, so a repository with two RULES.md files states two
+// different rules called RULES-5.3. Anything that matches rules by id - a
+// manifest declaration, a diff against a baseline, a blame date - credits both,
+// which is the false link this tool exists to prevent.
+func (r Rule) Key() string {
+	if r.File == "" {
+		return r.ID
+	}
+	return r.File + "#" + r.ID
+}
+
 // Gate is something in the repository that runs and can fail a build.
 type Gate struct {
 	ID    string `json:"id"`

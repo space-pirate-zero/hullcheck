@@ -162,7 +162,7 @@ func execute(args []string, stdout, stderr io.Writer) int {
 			if s.Tag != "" {
 				label = s.Tag
 			}
-			rep.Since[s.RuleID] = label
+			rep.Since[s.Key] = label
 		}
 	}
 
@@ -261,7 +261,11 @@ func execute(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "hullcheck: verify: %v\n", err)
 			return 2
 		}
-		rep = verify.Apply(rep, res)
+		var unmatched []string
+		rep, unmatched = verify.Apply(rep, res)
+		for _, w := range unmatched {
+			fmt.Fprintf(stderr, "hullcheck: %s\n", w)
+		}
 		verified = true
 	}
 
