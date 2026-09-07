@@ -326,6 +326,50 @@ nothing tested is the exact silent downgrade this audit is for. A gate whose con
 run fails only because git is missing is reported the same way — `BROKEN` is a finding
 about the gate, and this is a finding about the experiment.
 
+### The manifest format
+
+`.hullcheck.yml` is read by a hand-written parser covering a subset of YAML. That is
+a deliberate trade: a real YAML library would be one dependency, and *zero
+third-party dependencies* is a claim a supply-chain-adjacent tool should be able to
+make. Unknown keys are an error rather than a silently-ignored typo.
+
+What it accepts:
+
+| | |
+|---|---|
+| scalars | plain or double-quoted, on one line |
+| block scalars | `\|`, `\|-`, `>`, `>-` — for prose that does not fit on one line |
+| lists | inline `[a, b]`, or `- item` on their own lines |
+| mappings | inline `{ k: v }`, or indented `k: v` lines |
+| indentation | spaces, never tabs |
+
+```yaml
+  - id: RULES-8.8
+    source: RULES.md
+    statement: >-
+      Every render and every publish updates the owning skill with what it
+      taught, in the same PR.
+    gate:
+      kind: command
+      run: "make check-skills"
+      fixture_body: |
+        a file whose presence
+        should make the gate fail
+```
+
+A line that does not fit says so, and says what does:
+
+```
+hullcheck: .hullcheck.yml: line 30: expected "key: value", got "Every render and every"
+  this file is read by a small YAML subset parser: plain or double-quoted
+  single-line values, block scalars (|, |-, >, >-), lists inline as [a, b] or as
+  "- item" lines, and mappings inline as { k: v } or as indented "k: v" lines;
+  indentation must be spaces
+```
+
+`--print-manifest` writes the same sentence as a header comment, since that file is
+where people start editing.
+
 ### `source:` is half a rule's name
 
 A rule id is the clause number plus the document's basename, so a repository with

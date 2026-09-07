@@ -166,20 +166,41 @@ func Load(path string) (*File, bool, error) {
 	return f, true, nil
 }
 
+// Subset is what this parser accepts, in one sentence. It appears in the error
+// when a line does not fit, and as a header in `--print-manifest` output, because
+// the constraint was previously discoverable only by trial and error.
+const Subset = "this file is read by a small YAML subset parser: plain or " +
+	"double-quoted single-line values, block scalars (|, |-, >, >-), lists " +
+	"inline as [a, b] or as \"- item\" lines, and mappings inline as { k: v } or " +
+	"as indented \"k: v\" lines; indentation must be spaces"
+
+// listKeys and mapKeys are the keys whose value may be written as a block. Knowing
+// which is which is what lets an empty value be read as "the block follows"
+// rather than as an empty string.
+var listKeys = map[string]bool{"require": true, "ignore": true, "unset_env": true}
+var mapKeys = map[string]bool{"env": true}
+
 // Parse reads the manifest subset. Indentation is significant and must be spaces.
 func Parse(r io.Reader) (*File, error) {
 	out := &File{Version: 1}
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	line := 0
+	var lines []string
+	for sc.Scan() {
+		lines = append(lines, sc.Text())
+	}
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+
 	var cur *Rule
 	var curRef *Refusal
 	var curProv *Provenance
 	section := ""
 
-	for sc.Scan() {
-		line++
-		raw := sc.Text()
+	for i := 0; i < len(lines); i++ {
+		raw := lines[i]
+		line := i + 1
 		if strings.TrimSpace(raw) == "" || strings.HasPrefix(strings.TrimSpace(raw), "#") {
 			continue
 		}
@@ -188,6 +209,17 @@ func Parse(r io.Reader) (*File, error) {
 		}
 		indent := len(raw) - len(strings.TrimLeft(raw, " "))
 		body := strings.TrimLeft(raw, " ")
+
+		// A key whose value is written underneath it - a block scalar, a block
+		// list, a block mapping - is folded back into the one-line form the
+		// assigners already understand, and the lines it consumed are skipped.
+		if section != "" && strings.Contains(body, ":") && body != "gate:" {
+			folded, consumed, err := fold(lines, i, indent, body)
+			if err != nil {
+				return nil, err
+			}
+			body, i = folded, i+consumed
+		}
 
 		switch {
 		case indent == 0 && body == "rules:":
@@ -240,11 +272,8 @@ func Parse(r io.Reader) (*File, error) {
 				return nil, err
 			}
 		default:
-			return nil, fmt.Errorf("line %d: unexpected %q", line, body)
+			return nil, fmt.Errorf("line %d: unexpected %q\n  %s", line, body, Subset)
 		}
-	}
-	if err := sc.Err(); err != nil {
-		return nil, err
 	}
 	for i, r := range out.Rules {
 		if r.ID == "" {
@@ -258,6 +287,199 @@ func Parse(r io.Reader) (*File, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+// fold turns a key whose value is written on the lines beneath it into the
+// single-line form the assigners understand, and reports how many lines it ate.
+//
+// Prose is long, and folding it is the natural thing to reach for; a list of
+// globs reads better one per line than crammed into brackets. Refusing both and
+// saying only "expected key: value" made the format discoverable by trial and
+// error, which is not a property a manifest should have.
+func fold(lines []string, i, indent int, body string) (string, int, error) {
+	item := strings.HasPrefix(body, "- ")
+	kv := strings.TrimPrefix(body, "- ")
+	if item {
+		// A key on a list item line sits further in than the dash.
+		indent += 2
+	}
+	key, val, ok := split(kv)
+	if !ok {
+		return body, 0, nil
+	}
+	rebuild := func(v string) string {
+		if item {
+			return "- " + key + ": " + v
+		}
+		return key + ": " + v
+	}
+
+	if ind, chomp, isBlock := blockScalar(val); isBlock {
+		text, n := readBlock(lines, i, indent, ind)
+		if !chomp {
+			text += "\n"
+		}
+		return rebuild(quote(text)), n, nil
+	}
+	if val != "" {
+		return body, 0, nil
+	}
+	switch {
+	case listKeys[key]:
+		items, n, err := readItems(lines, i, indent)
+		if err != nil {
+			return "", 0, fmt.Errorf("line %d: %s: %w", i+1, key, err)
+		}
+		if n == 0 {
+			return body, 0, nil
+		}
+		return rebuild("[" + strings.Join(items, ", ") + "]"), n, nil
+	case mapKeys[key]:
+		pairs, n, err := readPairs(lines, i, indent)
+		if err != nil {
+			return "", 0, fmt.Errorf("line %d: %s: %w", i+1, key, err)
+		}
+		if n == 0 {
+			return body, 0, nil
+		}
+		return rebuild("{" + strings.Join(pairs, ", ") + "}"), n, nil
+	}
+	return body, 0, nil
+}
+
+// blockScalar reads a block indicator: |, |-, >, >- and their + form. It reports
+// whether the block is folded onto one line and whether the trailing newline is
+// chomped.
+func blockScalar(val string) (folded, chomp, ok bool) {
+	v := val
+	if h := strings.IndexByte(v, '#'); h > 0 {
+		v = strings.TrimSpace(v[:h])
+	}
+	if v != "|" && v != "|-" && v != "|+" && v != ">" && v != ">-" && v != ">+" {
+		return false, false, false
+	}
+	return v[0] == '>', strings.HasSuffix(v, "-"), true
+}
+
+// readBlock collects the lines of a block scalar: everything indented further
+// than its key, with that indentation removed.
+func readBlock(lines []string, i, indent int, folded bool) (string, int) {
+	var body []string
+	n := 0
+	strip := -1
+	for j := i + 1; j < len(lines); j++ {
+		l := lines[j]
+		if strings.TrimSpace(l) == "" {
+			body, n = append(body, ""), n+1
+			continue
+		}
+		at := len(l) - len(strings.TrimLeft(l, " "))
+		if at <= indent {
+			break
+		}
+		if strip < 0 {
+			strip = at
+		}
+		if at < strip {
+			strip = at
+		}
+		body, n = append(body, l), n+1
+	}
+	// Trailing blank lines belong to whatever comes next, not to the scalar.
+	for len(body) > 0 && strings.TrimSpace(body[len(body)-1]) == "" {
+		body, n = body[:len(body)-1], n-1
+	}
+	for k, l := range body {
+		if len(l) >= strip {
+			body[k] = l[strip:]
+		} else {
+			body[k] = strings.TrimLeft(l, " ")
+		}
+	}
+	if folded {
+		// ">" joins lines into a paragraph; a blank line stays a paragraph break.
+		var out []string
+		para := ""
+		for _, l := range body {
+			if l == "" {
+				out, para = append(out, para), ""
+				continue
+			}
+			if para == "" {
+				para = l
+			} else {
+				para += " " + l
+			}
+		}
+		return strings.Join(append(out, para), "\n"), n
+	}
+	return strings.Join(body, "\n"), n
+}
+
+// readItems collects a block sequence: "- value" lines indented under the key.
+func readItems(lines []string, i, indent int) ([]string, int, error) {
+	var items []string
+	n := 0
+	for j := i + 1; j < len(lines); j++ {
+		l := lines[j]
+		if strings.TrimSpace(l) == "" || strings.HasPrefix(strings.TrimSpace(l), "#") {
+			if len(items) == 0 {
+				break
+			}
+			n++
+			continue
+		}
+		at := len(l) - len(strings.TrimLeft(l, " "))
+		trimmed := strings.TrimLeft(l, " ")
+		if at <= indent || !strings.HasPrefix(trimmed, "- ") {
+			break
+		}
+		v := strings.TrimSpace(strings.TrimPrefix(trimmed, "- "))
+		if len(v) >= 2 && strings.HasPrefix(v, `"`) && strings.HasSuffix(v, `"`) {
+			v = unescape(v[1 : len(v)-1])
+		} else {
+			v = strings.Trim(v, "'")
+		}
+		items, n = append(items, quote(v)), n+1
+	}
+	// Blank lines counted after the last item belong to what follows.
+	return items, trim(lines, i, n), nil
+}
+
+// readPairs collects a block mapping: "key: value" lines indented under the key.
+func readPairs(lines []string, i, indent int) ([]string, int, error) {
+	var pairs []string
+	n := 0
+	for j := i + 1; j < len(lines); j++ {
+		l := lines[j]
+		if strings.TrimSpace(l) == "" || strings.HasPrefix(strings.TrimSpace(l), "#") {
+			if len(pairs) == 0 {
+				break
+			}
+			n++
+			continue
+		}
+		at := len(l) - len(strings.TrimLeft(l, " "))
+		trimmed := strings.TrimLeft(l, " ")
+		if at <= indent || strings.HasPrefix(trimmed, "- ") {
+			break
+		}
+		k, v, ok := split(trimmed)
+		if !ok {
+			return nil, 0, fmt.Errorf("line %d: expected \"key: value\", got %q", j+1, trimmed)
+		}
+		pairs, n = append(pairs, k+": "+quote(v)), n+1
+	}
+	return pairs, trim(lines, i, n), nil
+}
+
+// trim gives back the blank lines counted after the last real one, so a block
+// does not swallow the separator before whatever follows it.
+func trim(lines []string, i, n int) int {
+	for n > 0 && strings.TrimSpace(lines[i+n]) == "" {
+		n--
+	}
+	return n
 }
 
 // checkEnv refuses a refusal that both sets and unsets the same variable.
@@ -321,7 +543,7 @@ func firstKey(s string) string {
 func assign(r *Rule, kv string, line int) error {
 	k, v, ok := split(kv)
 	if !ok {
-		return fmt.Errorf("line %d: expected key: value, got %q", line, kv)
+		return fmt.Errorf("line %d: expected \"key: value\", got %q\n  %s", line, kv, Subset)
 	}
 	switch k {
 	case "id":
@@ -347,7 +569,7 @@ func assign(r *Rule, kv string, line int) error {
 func assignRefusal(r *Refusal, kv string, line int) error {
 	k, v, ok := split(kv)
 	if !ok {
-		return fmt.Errorf("line %d: expected key: value, got %q", line, kv)
+		return fmt.Errorf("line %d: expected \"key: value\", got %q\n  %s", line, kv, Subset)
 	}
 	switch k {
 	case "tool":
@@ -391,7 +613,7 @@ func assignRefusal(r *Refusal, kv string, line int) error {
 func assignProv(p *Provenance, kv string, line int) error {
 	k, v, ok := split(kv)
 	if !ok {
-		return fmt.Errorf("line %d: expected key: value, got %q", line, kv)
+		return fmt.Errorf("line %d: expected \"key: value\", got %q\n  %s", line, kv, Subset)
 	}
 	switch k {
 	case "artifacts":
@@ -483,15 +705,22 @@ func splitOutsideQuotes(s string, sep byte) []string {
 	return out
 }
 
-// splitList reads an inline list: [a, b, c].
+// splitList reads an inline list: [a, b, c]. Quoted items keep their commas,
+// which matters because a block list is folded into this form before it is read.
 func splitList(v string) []string {
-	v = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(v, "["), "]"))
+	v = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(v), "["), "]"))
 	if v == "" {
 		return nil
 	}
 	var out []string
-	for _, p := range strings.Split(v, ",") {
-		if p = strings.TrimSpace(strings.Trim(p, `"'`)); p != "" {
+	for _, p := range splitOutsideQuotes(v, ',') {
+		p = strings.TrimSpace(p)
+		if len(p) >= 2 && strings.HasPrefix(p, `"`) && strings.HasSuffix(p, `"`) {
+			p = unescape(p[1 : len(p)-1])
+		} else {
+			p = strings.Trim(p, `'`)
+		}
+		if p != "" {
 			out = append(out, p)
 		}
 	}
@@ -501,7 +730,7 @@ func splitList(v string) []string {
 func assignGate(g *Gate, kv string, line int) error {
 	k, v, ok := split(kv)
 	if !ok {
-		return fmt.Errorf("line %d: expected key: value, got %q", line, kv)
+		return fmt.Errorf("line %d: expected \"key: value\", got %q\n  %s", line, kv, Subset)
 	}
 	switch k {
 	case "kind":
@@ -538,6 +767,34 @@ func split(kv string) (key, val string, ok bool) {
 	return key, val, true
 }
 
+// quote is the inverse of unescape, and only of unescape.
+//
+// strconv.Quote would be the obvious choice and is wrong here: it renders every
+// non-ASCII rune as a \u escape, and unescape does not decode those. A statement
+// folded across lines that contains an em dash - the punctuation this project's
+// own policy documents use - would come back with the escape still in it, and
+// silently.
+func quote(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '\\':
+			b.WriteString(`\\`)
+		case '"':
+			b.WriteString(`\"`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\t':
+			b.WriteString(`\t`)
+		default:
+			b.WriteByte(s[i])
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
+}
+
 // unescape handles the small set of sequences a fixture body needs. Anything else
 // is left alone rather than guessed at.
 func unescape(s string) string {
@@ -570,7 +827,8 @@ func unescape(s string) string {
 func Print(w io.Writer, r model.Report) error {
 	if _, err := fmt.Fprintf(w, "# %s - generated by `hullcheck --print-manifest`.\n"+
 		"# Review every entry. A gate listed here is a claim; add a fixture and run\n"+
-		"# `hullcheck --verify` to turn the claim into evidence.\n", Name); err != nil {
+		"# `hullcheck --verify` to turn the claim into evidence.\n"+
+		"#\n%s", Name, comment("FORMAT: "+Subset+".")); err != nil {
 		return err
 	}
 	// An id repeated across documents is not a mistake in the reading - it is
@@ -619,6 +877,25 @@ func Print(w io.Writer, r model.Report) error {
 		}
 	}
 	return nil
+}
+
+// comment wraps a sentence into "# " lines, because a generated file people edit
+// should not have one 280-column line in it.
+func comment(text string) string {
+	const width = 76
+	var out strings.Builder
+	line := "#"
+	for _, w := range strings.Fields(text) {
+		if len(line)+1+len(w) > width && line != "#" {
+			out.WriteString(line + "\n")
+			line = "#"
+		}
+		line += " " + w
+	}
+	if line != "#" {
+		out.WriteString(line + "\n")
+	}
+	return out.String()
 }
 
 // repeatedIDs names the ids that more than one policy document produces, sorted

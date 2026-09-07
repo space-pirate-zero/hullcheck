@@ -275,3 +275,170 @@ func TestAVariableInBothEnvAndUnsetEnvIsRefused(t *testing.T) {
 		t.Errorf("the error must name the variable: %v", err)
 	}
 }
+
+// Issue #8: rule statements are prose and are long, so folding them is the
+// natural thing to reach for.
+func TestBlockScalarsParse(t *testing.T) {
+	f, err := Parse(strings.NewReader("version: 1\nrules:\n  - id: R-8.8\n    source: RULES.md\n" +
+		"    statement: >-\n      Every render and every publish updates the owning skill\n" +
+		"      with what it taught, in the same PR.\n" +
+		"    gate:\n      kind: command\n      run: \"make x\"\n" +
+		"      fixture_body: |\n        line one\n        line two\n" +
+		"  - id: R-8.9\n    source: RULES.md\n    statement: \"still parsed\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "Every render and every publish updates the owning skill with what it taught, in the same PR."
+	if f.Rules[0].Statement != want {
+		t.Errorf("folded scalar = %q, want %q", f.Rules[0].Statement, want)
+	}
+	if f.Rules[0].Gate.FixtureBody != "line one\nline two\n" {
+		t.Errorf("literal scalar = %q", f.Rules[0].Gate.FixtureBody)
+	}
+	// The block must not swallow the entry that follows it.
+	if len(f.Rules) != 2 || f.Rules[1].ID != "R-8.9" {
+		t.Fatalf("a block scalar ate the next rule: %+v", f.Rules)
+	}
+}
+
+// The chomping indicator decides the trailing newline, and a fixture body usually
+// wants one.
+func TestBlockScalarChomping(t *testing.T) {
+	for in, want := range map[string]string{
+		"|":  "a\nb\n",
+		"|-": "a\nb",
+		">":  "a b\n",
+		">-": "a b",
+	} {
+		f, err := Parse(strings.NewReader("version: 1\nrules:\n  - id: R\n    statement: " +
+			in + "\n      a\n      b\n"))
+		if err != nil {
+			t.Fatalf("%s: %v", in, err)
+		}
+		if f.Rules[0].Statement != want {
+			t.Errorf("%s gave %q, want %q", in, f.Rules[0].Statement, want)
+		}
+	}
+}
+
+// The block form is the more common YAML idiom, and `ignore:` appears in no
+// example, so it is exactly where someone reaches for it first.
+func TestBlockSequencesParse(t *testing.T) {
+	f, err := Parse(strings.NewReader("version: 1\nprovenance:\n" +
+		"  - artifacts: \"brand/**/*.png\"\n    record: \"{artifact}.meta.json\"\n" +
+		"    require: [source, model, license]\n" +
+		"    ignore:\n      - \"brand/**/thumbs/**\"\n      - \"brand/scratch/**\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := f.Provenance[0]
+	if len(p.Require) != 3 {
+		t.Errorf("the inline form must still work: %v", p.Require)
+	}
+	if len(p.Ignore) != 2 || p.Ignore[0] != "brand/**/thumbs/**" {
+		t.Errorf("block sequence = %v", p.Ignore)
+	}
+	if p.Record != "{artifact}.meta.json" {
+		t.Errorf("the block must not disturb the keys around it: %q", p.Record)
+	}
+}
+
+func TestBlockMappingParses(t *testing.T) {
+	f, err := Parse(strings.NewReader("version: 1\nrefusals:\n  - tool: t\n    run: \"./t\"\n" +
+		"    env:\n      PATH: \"/usr/bin:/bin\"\n      AWS_PROFILE: ci\n" +
+		"    unset_env:\n      - TOKEN\n    expect_exit: 2\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := f.Refusals[0]
+	if r.Env["PATH"] != "/usr/bin:/bin" || r.Env["AWS_PROFILE"] != "ci" {
+		t.Errorf("block mapping = %v", r.Env)
+	}
+	if len(r.UnsetEnv) != 1 || r.UnsetEnv[0] != "TOKEN" {
+		t.Errorf("unset_env = %v", r.UnsetEnv)
+	}
+	if r.ExpectExit != 2 {
+		t.Errorf("the block must not disturb the keys after it: %d", r.ExpectExit)
+	}
+}
+
+// A quoted item keeps its commas, which a block list folded into the inline form
+// would otherwise lose.
+func TestAQuotedListItemKeepsItsCommas(t *testing.T) {
+	f, err := Parse(strings.NewReader("version: 1\nprovenance:\n  - artifacts: \"a\"\n" +
+		"    record: \"r\"\n    ignore:\n      - \"a,b/**\"\n      - c\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := f.Provenance[0].Ignore; len(got) != 2 || got[0] != "a,b/**" {
+		t.Errorf("ignore = %v", got)
+	}
+}
+
+// The error described the symptom. It now describes the constraint, which turns a
+// puzzle into a one-line fix.
+func TestTheErrorStatesTheSubset(t *testing.T) {
+	_, err := Parse(strings.NewReader("version: 1\nrules:\n  - id: R\n    nonsense\n"))
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	for _, want := range []string{"block scalars", "inline as [a, b]", "spaces"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error must mention %q:\n%v", want, err)
+		}
+	}
+}
+
+// The generated manifest is where people start editing, so the format is stated
+// there too.
+func TestPrintStatesTheFormat(t *testing.T) {
+	var sb strings.Builder
+	if err := Print(&sb, model.Report{Findings: []model.Finding{
+		{Rule: model.Rule{ID: "R-1", File: "RULES.md", Statement: "x"}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sb.String(), "block scalars") {
+		t.Errorf("the generated manifest must state the format:\n%s", sb.String())
+	}
+	if _, err := Parse(strings.NewReader(sb.String())); err != nil {
+		t.Errorf("and must still parse: %v", err)
+	}
+}
+
+// Policy prose is full of punctuation that is not ASCII, and a value that comes
+// back with an escape still in it is worse than one that is rejected.
+func TestBlockValuesKeepNonASCII(t *testing.T) {
+	f, err := Parse(strings.NewReader("version: 1\nrules:\n  - id: R\n    source: RULES.md\n" +
+		"    statement: >-\n      Skills are living operator docs — every render\n" +
+		"      and every publish “updates” them.\n" +
+		"provenance:\n  - artifacts: a\n    record: r\n" +
+		"    ignore:\n      - \"brand/café/**\"\n" +
+		"refusals:\n  - tool: t\n    run: \"./t\"\n    env:\n      GREETING: \"héllo\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "Skills are living operator docs — every render and every publish “updates” them."
+	if f.Rules[0].Statement != want {
+		t.Errorf("statement = %q\n    want %q", f.Rules[0].Statement, want)
+	}
+	if got := f.Provenance[0].Ignore; len(got) != 1 || got[0] != "brand/café/**" {
+		t.Errorf("ignore = %q", got)
+	}
+	if got := f.Refusals[0].Env["GREETING"]; got != "héllo" {
+		t.Errorf("env value = %q", got)
+	}
+}
+
+// A value carrying the characters the escape set is made of must survive a round
+// trip through the folded form.
+func TestBlockValuesKeepQuotesAndBackslashes(t *testing.T) {
+	f, err := Parse(strings.NewReader("version: 1\nprovenance:\n  - artifacts: a\n    record: r\n" +
+		"    ignore:\n      - \"a\\\\b\"\n      - plain\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := f.Provenance[0].Ignore; len(got) != 2 || got[0] != `a\b` {
+		t.Errorf("ignore = %q", got)
+	}
+}
