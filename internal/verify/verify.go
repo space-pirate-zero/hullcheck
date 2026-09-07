@@ -39,7 +39,11 @@ type Result struct {
 	Source string
 	// Rule is the rule as the manifest declares it, so a proof can be reported
 	// even where discovery never produced a matching rule to fold it into.
-	Rule    model.Rule
+	Rule model.Rule
+	// Gates is the gate the manifest declares, if any. A rule added from the
+	// manifest alone must carry it, or a HOLD with no gate falls into the
+	// "never" bucket and vanishes from the Time-to-Truth ladder.
+	Gates   []model.Gate
 	Verdict model.Verdict
 	Why     string
 }
@@ -178,13 +182,27 @@ func result(r manifest.Rule, v model.Verdict, why string) Result {
 	if stmt == "" {
 		stmt = "declared in " + manifest.Name + " with no statement"
 	}
+	var gates []model.Gate
+	if r.Gate != nil && r.Gate.Run != "" {
+		kind := model.Kind(r.Gate.Kind)
+		if kind == "" {
+			kind = model.KindCommand
+		}
+		// Manual, because a manifest says what a gate does and never says when
+		// it runs. Manual has no automatic detection latency, so an unknown
+		// schedule can only make the ladder more pessimistic, never less.
+		gates = []model.Gate{{
+			ID: manifest.Name + "::" + r.ID, Kind: kind, File: manifest.Name,
+			Name: r.Gate.Run, Run: r.Gate.Run, Stage: model.Manual,
+		}}
+	}
 	return Result{
 		RuleID: r.ID, Source: r.SourceFile(),
 		Rule: model.Rule{
 			ID: r.ID, Source: src, File: r.SourceFile(),
 			Statement: stmt, Severity: sev,
 		},
-		Verdict: v, Why: why,
+		Gates: gates, Verdict: v, Why: why,
 	}
 }
 
@@ -249,14 +267,10 @@ func Apply(rep model.Report, res []Result) (model.Report, []string) {
 		rep.Findings[i].Why = r.Why
 	}
 
-	// Everything that reached nothing is said out loud. Requiring a source makes
-	// a new way to miss - a typo, a moved document, a leading "./" - and a
-	// declaration that quietly applies to nothing is the failure this change is
-	// about, not a smaller version of it that is acceptable.
 	// Whatever folded into no discovered rule is added, so that proving a gate
-	// always moves the number. The exception is an ambiguous id: there the tool
-	// cannot tell which of several rules was meant, and inventing another is
-	// worse than saying so.
+	// always moves the number, and every addition is said out loud. The one
+	// exception is an ambiguous id: there the tool cannot tell which of several
+	// rules was meant, and inventing another is worse than saying so.
 	added := 0
 	for _, r := range res {
 		if applied[r.Key()] {
@@ -275,6 +289,7 @@ func Apply(rep model.Report, res []Result) (model.Report, []string) {
 		}
 		rep.Findings = append(rep.Findings, model.Finding{
 			Rule:    rule,
+			Gates:   r.Gates,
 			Verdict: r.Verdict,
 			Why: r.Why + " (declared in " + manifest.Name +
 				"; the scanner did not find this rule)",

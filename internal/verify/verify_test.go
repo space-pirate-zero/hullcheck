@@ -316,3 +316,54 @@ func TestApplyAddsNothingForAnAmbiguousDeclaration(t *testing.T) {
 		t.Errorf("want an ambiguity warning, got %v", warn)
 	}
 }
+
+// A HOLD with no gate falls into the "never" bucket, which the ladder does not
+// print, so the rows would sum to fewer rules than the HOLD count. A rule added
+// from the manifest carries the gate the manifest declared.
+func TestAnAddedRuleCarriesTheDeclaredGate(t *testing.T) {
+	m := &manifest.File{Version: 1, Rules: []manifest.Rule{{
+		ID: "R-9", Source: "RULES.md", Statement: "x",
+		Gate: &manifest.Gate{Kind: "makefile", Run: "make readonly"},
+	}}}
+	res, err := Run(m, Options{Root: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _ := Apply(model.Report{}, res)
+	if len(out.Findings) != 1 {
+		t.Fatalf("got %d findings, want 1", len(out.Findings))
+	}
+	f := out.Findings[0]
+	if f.Verdict != model.Hold {
+		t.Fatalf("verdict = %q, want HOLD", f.Verdict)
+	}
+	if len(f.Gates) != 1 {
+		t.Fatalf("an added HOLD must carry its declared gate, got %+v", f.Gates)
+	}
+	if f.Gates[0].Run != "make readonly" || f.Gates[0].Kind != model.KindMakefile {
+		t.Errorf("the gate lost what the manifest declared: %+v", f.Gates[0])
+	}
+	// A manifest says what a gate does, never when it runs, so the stage must be
+	// the one with no automatic detection.
+	if f.Stage() != model.Manual {
+		t.Errorf("stage = %q, want manual", f.Stage())
+	}
+}
+
+// A rule declared with no gate at all is a BREACH, and carries no gate.
+func TestAnAddedRuleWithNoGateCarriesNone(t *testing.T) {
+	m := &manifest.File{Version: 1, Rules: []manifest.Rule{{
+		ID: "R-9", Source: "RULES.md", Statement: "x",
+	}}}
+	res, err := Run(m, Options{Root: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _ := Apply(model.Report{}, res)
+	if len(out.Findings) != 1 || out.Findings[0].Verdict != model.Breach {
+		t.Fatalf("want one BREACH, got %+v", out.Findings)
+	}
+	if len(out.Findings[0].Gates) != 0 {
+		t.Errorf("a rule with no declared gate must carry none: %+v", out.Findings[0].Gates)
+	}
+}
