@@ -17,6 +17,7 @@ import (
 	"strconv"
 
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/space-pirate-zero/hullcheck/internal/banner"
@@ -44,7 +45,11 @@ const usage = `hullcheck - check the hull before you trust the air
 
 usage:
   hullcheck [flags] [path]
-  hullcheck diff [--base REF] [path]     rules newly unenforced since REF
+  hullcheck [flags] diff [--base REF] [path]   rules newly unenforced since REF
+
+Global flags compose with the subcommand and may be written on either side of
+it: "hullcheck --no-banner diff --base main" and
+"hullcheck diff --base main --no-banner" are the same command.
 
 flags:
   --json            emit the reading as JSON
@@ -84,9 +89,6 @@ func main() {
 // execute is main() with its edges injected, so the exit-code contract - which is
 // this tool's public API - can be tested rather than asserted.
 func execute(args []string, stdout, stderr io.Writer) int {
-	if len(args) > 0 && args[0] == "diff" {
-		return diffMode(args[1:], stdout, stderr)
-	}
 	fs := flag.NewFlagSet("hullcheck", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
@@ -109,9 +111,11 @@ func execute(args []string, stdout, stderr io.Writer) int {
 		maxCopy   = fs.String("max-copy", "", "refuse to copy more than this many bytes")
 		maxFiles  = fs.String("max-files", "", "refuse to copy more than this many files")
 		planOnly  = fs.Bool("scratch-plan", false, "measure what would be copied, and copy nothing")
+		base      = fs.String("base", "origin/HEAD", "diff mode: baseline ref")
 	)
 	fs.Usage = func() { fmt.Fprint(stderr, usage) }
-	if err := fs.Parse(args); err != nil {
+	words, err := parse(fs, args)
+	if err != nil {
 		return 2
 	}
 
@@ -120,9 +124,31 @@ func execute(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
+	// "diff" is a subcommand, and the flags around it are the same flags. The
+	// usage text lists them together, so parsing them apart - and reporting a
+	// flag before the subcommand as a directory that does not exist - was a
+	// message pointing at a problem the user did not have.
+	sub := ""
+	if len(words) > 0 && words[0] == "diff" {
+		sub, words = "diff", words[1:]
+	}
+	if len(words) > 1 {
+		fmt.Fprintf(stderr, "hullcheck: one path at a time, got %d: %s\n",
+			len(words), strings.Join(words, " "))
+		return 2
+	}
+
 	root := "."
-	if fs.NArg() > 0 {
-		root = fs.Arg(0)
+	if len(words) > 0 {
+		root = words[0]
+	}
+
+	if sub == "diff" {
+		return diffMode(fs, root, *base, *noBanner, stdout, stderr)
+	}
+	if set(fs, "base") {
+		fmt.Fprintln(stderr, "hullcheck: --base is only meaningful with hullcheck diff")
+		return 2
 	}
 
 	sopt, err := scratchOptions(*scratchAt, *maxCopy, *maxFiles)
@@ -354,30 +380,80 @@ func driftMode(root, since string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// parse reads flags and positional words in any order, so a global flag may sit
+// on either side of the diff subcommand. Go's flag package stops at the first
+// non-flag argument; resuming after each one is what lets the two mix.
+//
+// "--" still ends the flags for good. Resuming past it would take a path that
+// begins with a dash and read it as a flag, which is the one thing "--" exists to
+// prevent, and it would leave no way to name such a path at all.
+func parse(fs *flag.FlagSet, args []string) ([]string, error) {
+	var literal []string
+	for i, a := range args {
+		if a == "--" {
+			args, literal = args[:i], args[i+1:]
+			break
+		}
+	}
+	var words []string
+	rest := args
+	for {
+		if err := fs.Parse(rest); err != nil {
+			return nil, err
+		}
+		if fs.NArg() == 0 {
+			return append(words, literal...), nil
+		}
+		words = append(words, fs.Arg(0))
+		rest = fs.Args()[1:]
+	}
+}
+
+// set reports whether a flag was given on the command line, as opposed to left at
+// its default. Silently ignoring a flag that does nothing is how a user comes to
+// believe something ran that did not.
+func set(fs *flag.FlagSet, name string) bool {
+	found := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			found = true
+		}
+	})
+	return found
+}
+
+// diffOnly are the flags `hullcheck diff` acts on. Anything else the user gave is
+// refused by name rather than accepted and ignored.
+var diffOnly = map[string]bool{"base": true, "no-banner": true}
+
 // diffMode is the pull-request gate: adding a rule without adding its gate is the
 // one change a living codebase cannot accept. Pre-existing gaps are not the PR's
 // fault and do not fail it.
-func diffMode(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("hullcheck diff", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	base := fs.String("base", "origin/HEAD", "baseline ref")
-	if err := fs.Parse(args); err != nil {
+func diffMode(fs *flag.FlagSet, root, base string, noBanner bool, stdout, stderr io.Writer) int {
+	var stray []string
+	fs.Visit(func(f *flag.Flag) {
+		if !diffOnly[f.Name] {
+			stray = append(stray, "--"+f.Name)
+		}
+	})
+	if len(stray) > 0 {
+		sort.Strings(stray)
+		fmt.Fprintf(stderr, "hullcheck: hullcheck diff does not act on %s.\n"+
+			"  It reports the rules left unenforced since a baseline, and takes"+
+			" --base and --no-banner.\n", strings.Join(stray, ", "))
 		return 2
 	}
-	root := "."
-	if fs.NArg() > 0 {
-		root = fs.Arg(0)
-	}
-	added, _, err := history.Diff(root, *base)
+	banner.Write(stderr, cols(), noBanner, isTTY(os.Stderr))
+	added, _, err := history.Diff(root, base)
 	if err != nil {
 		fmt.Fprintf(stderr, "hullcheck: %v\n", err)
 		return 2
 	}
 	if len(added) == 0 {
-		fmt.Fprintf(stdout, "hullcheck: no rules were left unenforced since %s\n", *base)
+		fmt.Fprintf(stdout, "hullcheck: no rules were left unenforced since %s\n", base)
 		return 0
 	}
-	fmt.Fprintf(stdout, "hullcheck: %d rule(s) added without a gate since %s\n\n", len(added), *base)
+	fmt.Fprintf(stdout, "hullcheck: %d rule(s) added without a gate since %s\n\n", len(added), base)
 	for _, f := range added {
 		fmt.Fprintf(stdout, "  BREACH  %-18s %s\n          %s\n", f.Rule.ID, f.Rule.Statement, f.Rule.Source)
 	}
