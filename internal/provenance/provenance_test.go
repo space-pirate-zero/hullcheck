@@ -196,3 +196,32 @@ func TestDiscoveryRecognisesKnownFormatsByExactName(t *testing.T) {
 		}
 	}
 }
+
+// The record template is manifest text a pull request can change. It must not
+// reach outside the repository, by ".." or by a symlink.
+func TestRecordOutsideRepositoryIsMissing(t *testing.T) {
+	outside := t.TempDir()
+	secret := filepath.Join(outside, "secret.json")
+	if err := os.WriteFile(secret, []byte(`{"source":"s","model":"m","license":"l"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root := repo(t, map[string]string{"art/one.png": "x", "art/two.png": "x"})
+	rel, err := filepath.Rel(root, secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, filepath.Join(root, "art", "two.png.meta.json")); err != nil {
+		t.Skip("symlinks unavailable:", err)
+	}
+	dotdot := manifest.Provenance{Artifacts: "art/one.png", Record: filepath.ToSlash(rel), Require: sidecar.Require}
+	link := manifest.Provenance{Artifacts: "art/two.png", Record: "{artifact}.meta.json", Require: sidecar.Require}
+	rep, err := Audit(root, []manifest.Provenance{dotdot, link})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range []string{"art/one.png", "art/two.png"} {
+		if got := item(t, rep, a); got.Verdict != Missing {
+			t.Errorf("%s: verdict = %q, want MISSING for a record outside the repository", a, got.Verdict)
+		}
+	}
+}

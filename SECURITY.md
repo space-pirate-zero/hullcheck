@@ -13,6 +13,19 @@ afford to leak. That shapes the whole design.
 
 These run on every pull request. They are gates, not promises.
 
+## What `--verify` and `--refusals` execute
+
+A plain reading executes nothing. `--verify` and `--refusals` are the exception, by
+design: they run the `run:` commands declared in `.hullcheck.yml` through `sh -c`,
+in a scratch copy, **with the caller's environment**. Whoever can edit that file can
+run code wherever those flags are used. They carry the same trust as `make test`:
+safe on a `pull_request` run, which GitHub gives no secrets for forks, and unsafe on
+`pull_request_target` or any job that checks out untrusted code next to credentials.
+`unset_env:` strips a variable from one refusal; it is not a sandbox.
+
+Refs given to `--since` and `--base` are refused if they start with `-`, so a ref
+can never become a `git archive` option.
+
 ## Reporting a vulnerability
 
 Report privately via GitHub Security Advisories on this repository. Please do not open

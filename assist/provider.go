@@ -13,7 +13,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -168,8 +170,21 @@ func probeAll(ctx context.Context, probe func(context.Context, candidate) (strin
 	return &Provider{Name: h.c.name, BaseURL: h.c.url, Model: h.model, Local: true}
 }
 
-func isLocal(url string) bool {
-	return strings.Contains(url, "127.0.0.1") || strings.Contains(url, "localhost")
+// isLocal reports whether raw names this machine. It parses the host rather than
+// searching the string: a substring test called "http://localhost.evil.example"
+// and "http://evil.example/?127.0.0.1" local, and Local is what tells the user the
+// repository never leaves the host.
+func isLocal(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	h := u.Hostname()
+	if h == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
 }
 
 // ProbeHTTP asks a candidate for its model list. 300ms: a local server answers
@@ -248,6 +263,11 @@ func (p Provider) Complete(ctx context.Context, system, user string) (string, er
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if p.APIKey != "" {
+		// A bearer token over plain HTTP to another machine is readable by anyone on
+		// the path. Refuse rather than send it.
+		if strings.HasPrefix(strings.ToLower(p.BaseURL), "http://") && !isLocal(p.BaseURL) {
+			return "", fmt.Errorf("refusing to send an API key over plain http to %s; use https", p.BaseURL)
+		}
 		req.Header.Set("Authorization", "Bearer "+p.APIKey)
 	}
 	resp, err := http.DefaultClient.Do(req)

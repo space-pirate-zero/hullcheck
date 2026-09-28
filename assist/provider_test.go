@@ -149,3 +149,26 @@ func TestCompleteSurfacesServerErrors(t *testing.T) {
 		t.Fatalf("err = %v, want the status surfaced", err)
 	}
 }
+
+func TestIsLocalParsesTheHost(t *testing.T) {
+	for raw, want := range map[string]bool{
+		"http://127.0.0.1:11434":         true,
+		"http://localhost:1234":          true,
+		"http://[::1]:8000":              true,
+		"http://localhost.evil.example":  false,
+		"http://evil.example/?127.0.0.1": false,
+		"https://api.openai.com":         false,
+	} {
+		if got := isLocal(raw); got != want {
+			t.Errorf("isLocal(%q) = %v, want %v", raw, got, want)
+		}
+	}
+}
+
+func TestCompleteRefusesKeyOverPlainHTTP(t *testing.T) {
+	p := Provider{Name: "x", BaseURL: "http://203.0.113.9", Model: "m", APIKey: "k"}
+	if _, err := p.Complete(context.Background(), "s", "u"); err == nil ||
+		!strings.Contains(err.Error(), "refusing") {
+		t.Fatalf("err = %v, want a refusal before any request", err)
+	}
+}

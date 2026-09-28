@@ -95,6 +95,17 @@ func Audit(root string, decls []manifest.Provenance) (Report, error) {
 	if len(decls) == 0 {
 		return Report{Declared: false, Found: discover(root)}, nil
 	}
+	// Records are read through os.Root, opened once for the whole audit. The record
+	// template comes from the manifest, which a pull request can edit: joined
+	// naively, a "../../x" template or a record symlinked out of the tree turned the
+	// verdict into an oracle for files outside the repository. os.Root refuses both,
+	// and a record that lives outside the repository is not provenance for it, so
+	// it reads as missing.
+	r, err := os.OpenRoot(root)
+	if err != nil {
+		return Report{}, err
+	}
+	defer func() { _ = r.Close() }()
 	out := Report{Declared: true}
 	for _, d := range decls {
 		files, err := glob(root, d.Artifacts, d.Ignore)
@@ -102,7 +113,7 @@ func Audit(root string, decls []manifest.Provenance) (Report, error) {
 			return Report{}, err
 		}
 		for _, rel := range files {
-			out.Items = append(out.Items, audit(root, rel, d))
+			out.Items = append(out.Items, audit(r, rel, d))
 		}
 	}
 	sort.Slice(out.Items, func(i, j int) bool {
@@ -114,10 +125,10 @@ func Audit(root string, decls []manifest.Provenance) (Report, error) {
 	return out, nil
 }
 
-func audit(root, rel string, d manifest.Provenance) Item {
+func audit(r *os.Root, rel string, d manifest.Provenance) Item {
 	rec := expand(d.Record, rel)
 	it := Item{Artifact: rel, Record: rec}
-	body, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rec))) //nolint:gosec
+	body, err := r.ReadFile(filepath.FromSlash(rec))
 	if err != nil {
 		it.Verdict = Missing
 		return it
