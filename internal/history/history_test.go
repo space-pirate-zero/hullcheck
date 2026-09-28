@@ -163,3 +163,22 @@ func status(t *testing.T, root string) string {
 	}
 	return string(out)
 }
+
+// A ref is argv. "--output=<path>" once made git archive truncate any file the
+// user could write, and "--remote=<url>" made it fetch over the network.
+func TestAtRefusesOptionShapedRef(t *testing.T) {
+	root := gitRepo(t)
+	victim := filepath.Join(t.TempDir(), "victim")
+	if err := os.WriteFile(victim, []byte("keep me"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, ref := range []string{"--output=" + victim, "--remote=https://example.invalid/x", "-o" + victim} {
+		if _, err := At(root, ref); err == nil {
+			t.Errorf("At(%q) succeeded; an option-shaped ref must be refused", ref)
+		}
+	}
+	b, err := os.ReadFile(victim)
+	if err != nil || string(b) != "keep me" {
+		t.Errorf("a ref wrote outside the repository: %q, %v", b, err)
+	}
+}

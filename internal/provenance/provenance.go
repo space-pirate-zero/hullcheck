@@ -117,7 +117,7 @@ func Audit(root string, decls []manifest.Provenance) (Report, error) {
 func audit(root, rel string, d manifest.Provenance) Item {
 	rec := expand(d.Record, rel)
 	it := Item{Artifact: rel, Record: rec}
-	body, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rec))) //nolint:gosec
+	body, err := readInside(root, rec)
 	if err != nil {
 		it.Verdict = Missing
 		return it
@@ -144,6 +144,20 @@ func audit(root, rel string, d manifest.Provenance) Item {
 	}
 	it.Verdict = Recorded
 	return it
+}
+
+// readInside reads rel from inside root and nowhere else. The record template
+// comes from the manifest, which a pull request can edit: joined naively, a
+// "../../x" template or a record symlinked out of the tree turned the verdict into
+// an oracle for files outside the repository. os.Root refuses both. A record that
+// lives outside the repository is not provenance for it, so it reads as missing.
+func readInside(root, rel string) ([]byte, error) {
+	r, err := os.OpenRoot(root)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = r.Close() }()
+	return r.ReadFile(filepath.FromSlash(rel))
 }
 
 // expand fills the record template. {artifact} is the artifact path, {base} the

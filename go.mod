@@ -1,3 +1,3 @@
 module github.com/space-pirate-zero/hullcheck
 
-go 1.24
+go 1.26

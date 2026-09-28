@@ -65,13 +65,25 @@ func At(root, ref string) (model.Report, error) {
 	return rep, nil
 }
 
+// ErrBadRef is returned for a ref that git would read as an option.
+var ErrBadRef = errors.New("a ref cannot start with '-'")
+
 // extract materialises ref into dir via `git archive | tar -x`.
+//
+// ref reaches argv from --since, --base and the Action's inputs. Unchecked, a ref
+// of "--output=<path>" made git archive create or truncate any file the user could
+// write, and "--remote=<url>" made it fetch over the network - breaking both the
+// read-only and the no-network guarantee. The prefix check gives a readable error;
+// --end-of-options is what makes git itself refuse to parse the ref as a flag.
 func extract(root, ref, dir string) error {
+	if strings.HasPrefix(ref, "-") {
+		return fmt.Errorf("%w: %q", ErrBadRef, ref)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), Timeout)
 	defer cancel()
 
-	archive := exec.CommandContext(ctx, "git", "-C", root, "archive", "--format=tar", ref) //nolint:gosec
-	untar := exec.CommandContext(ctx, "tar", "-x", "-C", dir)                              //nolint:gosec
+	archive := exec.CommandContext(ctx, "git", "-C", root, "archive", "--format=tar", "--end-of-options", ref) //nolint:gosec
+	untar := exec.CommandContext(ctx, "tar", "-x", "-C", dir)                                                  //nolint:gosec
 	pipe, err := archive.StdoutPipe()
 	if err != nil {
 		return err
