@@ -111,7 +111,10 @@ func needsGit(r manifest.Refusal) bool {
 }
 
 // advice names the fix, which differs by why the copy has no repository.
-func advice(r manifest.Refusal) string {
+func advice(r manifest.Refusal, ctl *scratch.Dir) string {
+	if r.NeedsGit && ctl.Linked() {
+		return scratch.LinkedAdvice
+	}
 	if r.NeedsGit {
 		return "needs_git is set, but this directory is not a git work tree, so there was" +
 			" no repository to carry into the copy"
@@ -161,7 +164,7 @@ func prove(r manifest.Refusal, opt Options) (Result, error) {
 			return Result{r.Tool, r.When, Unprovable, fmt.Sprintf(
 				"the condition is a git fact and the scratch copy has no .git, and the tool"+
 					" already fails (exit %d) without it - %s",
-				base.Exit, advice(r))}, nil
+				base.Exit, advice(r, ctl))}, nil
 		}
 		return Result{r.Tool, r.When, Broken, fmt.Sprintf(
 			"the tool already fails (exit %d) without the condition, so its refusal cannot be told apart from being broken",
@@ -204,7 +207,7 @@ func prove(r manifest.Refusal, opt Options) (Result, error) {
 		return Result{r.Tool, r.When, Unprovable,
 			"the tool ran to success, but the condition is a git fact and the scratch copy" +
 				" has no .git, so it was never put in the situation it claims to refuse" +
-				" - " + advice(r)}, nil
+				" - " + advice(r, ctl)}, nil
 	case got.Exit == 0:
 		return Result{r.Tool, r.When, Proceeds,
 			"the tool ran to success under a condition it claims to refuse - a silent downgrade"}, nil

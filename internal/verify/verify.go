@@ -138,7 +138,10 @@ func proveOne(root string, r manifest.Rule, opt Options) (Result, error) {
 		// experiment did not earn.
 		if needsGit(r.Gate.Run) && !dir.HasGit() {
 			fix := "add needs_git: true to its gate block"
-			if r.Gate.NeedsGit {
+			switch {
+			case r.Gate.NeedsGit && dir.Linked():
+				fix = scratch.LinkedAdvice
+			case r.Gate.NeedsGit:
 				fix = "needs_git is set, but this directory is not a git work tree," +
 					" so there was no repository to carry into the copy"
 			}

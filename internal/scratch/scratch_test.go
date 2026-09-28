@@ -466,3 +466,165 @@ func TestEnvDescribe(t *testing.T) {
 		t.Error("Empty is wrong")
 	}
 }
+
+// head reads a repository's HEAD commit from outside any scratch copy.
+func head(t *testing.T, root string) string {
+	t.Helper()
+	out, err := exec.Command("git", "-C", root, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// linkedWorktree makes a repository with a linked worktree beside it, and returns
+// the main repository and the worktree.
+func linkedWorktree(t *testing.T) (repo, wt string) {
+	t.Helper()
+	hasGit(t)
+	repo = t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "a.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitInit(t, repo)
+	wt = filepath.Join(t.TempDir(), "wt")
+	cmd := exec.Command("git", "-C", repo, "worktree", "add", "-q", "-b", "side", wt)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("worktree add: %v\n%s", err, out)
+	}
+	return repo, wt
+}
+
+// A linked worktree's .git is a file holding an ABSOLUTE gitdir path. Copied
+// verbatim it still resolves, so a command under test ran against the real
+// repository's index and refs - and could commit to it. The copy must keep the
+// fact "this is a worktree" and lose the way back.
+func TestWorktreeCopyCannotReachTheRealRepository(t *testing.T) {
+	repo, wt := linkedWorktree(t)
+	before := head(t, wt)
+
+	d, err := CopyWith(wt, Options{IncludeGit: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	st, err := os.Lstat(filepath.Join(d.Path, ".git"))
+	if err != nil || !st.Mode().IsRegular() {
+		t.Fatalf("a worktree copy must still have a .git FILE, so a worktree check can fire: %v", err)
+	}
+	if d.HasGit() {
+		t.Error("a withheld pointer is not a repository; HasGit must say so")
+	}
+	got, err := d.Run("git -c user.email=t@e -c user.name=t commit -q --allow-empty -m escaped", 30*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Exit == 0 {
+		t.Errorf("git succeeded inside the copy of a worktree: %s", got.Output)
+	}
+	if after := head(t, wt); after != before {
+		t.Errorf("a command in the copy committed to the real worktree: %s -> %s", before, after)
+	}
+	if b, _ := exec.Command("git", "-C", repo, "log", "--all", "--oneline").Output(); strings.Contains(string(b), "escaped") {
+		t.Error("a command in the copy wrote a commit into the real repository")
+	}
+}
+
+// With no .git in the copy, git walks up the parent directories. A copy placed
+// under a repository (--scratch-dir inside one) must not find it.
+func TestCopyDoesNotDiscoverAnEnclosingRepository(t *testing.T) {
+	hasGit(t)
+	outer := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outer, "o.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitInit(t, outer)
+	d, err := CopyWith(seed(t), Options{Dir: outer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	got, err := d.Run("git rev-parse --show-toplevel", 30*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Exit == 0 {
+		t.Errorf("a command in the copy found the enclosing repository: %s", got.Output)
+	}
+}
+
+// git sets GIT_DIR and GIT_INDEX_FILE for hooks, and a caller may export them.
+// Inherited, they point every git command in the copy at the real repository.
+func TestAmbientGitLocationIsNotInherited(t *testing.T) {
+	repo, _ := linkedWorktree(t)
+	t.Setenv("GIT_DIR", filepath.Join(repo, ".git"))
+	t.Setenv("GIT_WORK_TREE", repo)
+	d, err := Copy(seed(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	got, err := d.Run("git rev-parse --git-dir", 30*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Exit == 0 {
+		t.Errorf("GIT_DIR leaked into the copy: %s", got.Output)
+	}
+	// A manifest that sets one on purpose still gets it.
+	got, err = d.RunWith("echo [$GIT_DIR]", 10*time.Second, Env{Set: map[string]string{"GIT_DIR": "declared"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got.Output, "[declared]") {
+		t.Errorf("a declared GIT_DIR must be honoured, got %q", got.Output)
+	}
+}
+
+// A copied .git DIRECTORY can point out too: core.worktree is an absolute path in
+// .git/config, and git in the copy then treats the REAL checkout as its work tree.
+func TestCopiedRepositoryDoesNotKeepAnAbsoluteWorkTree(t *testing.T) {
+	hasGit(t)
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitInit(t, root)
+	if out, err := exec.Command("git", "-C", root, "config", "core.worktree", root).CombinedOutput(); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	d, err := CopyWith(root, Options{IncludeGit: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	got, err := d.Run("git rm -q a.txt", 30*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, serr := os.Stat(filepath.Join(root, "a.txt")); serr != nil {
+		t.Fatalf("a command in the copy deleted a file in the real checkout (exit %d: %s)", got.Exit, got.Output)
+	}
+	if _, serr := os.Stat(filepath.Join(d.Path, "a.txt")); !os.IsNotExist(serr) {
+		t.Errorf("git in the copy must act on the copy (exit %d: %s)", got.Exit, got.Output)
+	}
+}
+
+// A manifest that unsets GIT_CEILING_DIRECTORIES on purpose has declared a
+// condition, and the wall must not quietly put it back.
+func TestDeclaredCeilingUnsetIsHonoured(t *testing.T) {
+	d, err := Empty()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	got, err := d.RunWith("echo [${GIT_CEILING_DIRECTORIES-absent}]", 10*time.Second,
+		Env{Unset: []string{"GIT_CEILING_DIRECTORIES"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got.Output, "[absent]") {
+		t.Errorf("a declared unset must hold, got %q", got.Output)
+	}
+}
