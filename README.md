@@ -281,10 +281,19 @@ that refuses to run inside a linked worktree can be proven:
       expect_output: "refusing to index"
 ```
 
-The copy is verbatim, including a `.git` that is a file rather than a directory.
-Rewriting that pointer to reach the original repository would let a command under
-test write into the repository hullcheck is reading, and that is not a trade worth a
-verdict.
+A `.git` directory is copied as it is: the copy gets a repository of its own. A `.git`
+**file** (a linked worktree, or a submodule) is kept as a file, but its pointer is
+withheld. The real one is usually an absolute path to the original repository, and
+following it would let a command under test write there. So inside a copy of a
+worktree, a tool that asks "am I in a worktree?" sees yes, and git sees no repository.
+A git-reading gate verified from a worktree is therefore UNPROVABLE, with a note to
+run from a standalone clone.
+
+Commands under test also never inherit `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`
+or the other variables that tell git where a repository is (git sets some of them
+for hooks), and `GIT_CEILING_DIRECTORIES` stops git's upward search at the copy, so
+a copy placed inside another repository cannot find it. A variable set by `env:` is
+kept: that is a declared condition.
 
 ### Refusals that turn on the environment
 

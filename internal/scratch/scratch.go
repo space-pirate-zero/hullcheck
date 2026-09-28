@@ -23,6 +23,7 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -133,8 +134,13 @@ func CopyWith(src string, opt Options) (*Dir, error) {
 		return nil, err
 	}
 	for _, f := range files {
-		if err := copyFile(filepath.Join(src, filepath.FromSlash(f.rel)),
-			filepath.Join(dst, filepath.FromSlash(f.rel))); err != nil {
+		from := filepath.Join(src, filepath.FromSlash(f.rel))
+		to := filepath.Join(dst, filepath.FromSlash(f.rel))
+		cp := copyFile
+		if path.Base(f.rel) == ".git" {
+			cp = withholdPointer
+		}
+		if err := cp(from, to); err != nil {
 			_ = os.RemoveAll(dst)
 			return nil, err
 		}
@@ -182,13 +188,25 @@ func EmptyWith(opt Options) (*Dir, error) {
 // HasGit reports whether the copy actually contains a repository. Whether a
 // git-shaped condition could exist is a fact about the copy, not about the flag
 // that asked for one: a repository that is not a git work tree has no .git to
-// copy, and asking for one changes nothing.
+// copy, and asking for one changes nothing. A linked worktree's withheld pointer
+// is not a repository either (see Linked).
 func (d *Dir) HasGit() bool {
 	if d == nil || d.Path == "" {
 		return false
 	}
-	_, err := os.Lstat(filepath.Join(d.Path, ".git"))
-	return err == nil
+	st, err := os.Lstat(filepath.Join(d.Path, ".git"))
+	return err == nil && st.IsDir()
+}
+
+// Linked reports whether the copy was made from a linked worktree or submodule:
+// it has a .git FILE, whose pointer was withheld. A tool that asks "am I in a
+// worktree?" sees yes; a git command sees no repository at all.
+func (d *Dir) Linked() bool {
+	if d == nil || d.Path == "" {
+		return false
+	}
+	st, err := os.Lstat(filepath.Join(d.Path, ".git"))
+	return err == nil && st.Mode().IsRegular()
 }
 
 // Close removes the copy.
@@ -300,6 +318,36 @@ func (e Env) apply() []string {
 	return append(out, "HULLCHECK=1")
 }
 
+// gitLocation are the variables that tell git where a repository is, rather than
+// letting it look. git sets GIT_DIR and GIT_INDEX_FILE for hooks, and a caller may
+// export any of them; inherited, they aim every git command in the copy at the
+// real repository.
+var gitLocation = []string{
+	"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR",
+	"GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CEILING_DIRECTORIES",
+}
+
+// confine is apply, plus the walls that keep a command inside the copy: the
+// ambient git location variables are dropped, and GIT_CEILING_DIRECTORIES stops
+// git's upward search at the copy, so a copy with no .git of its own cannot
+// discover a repository that happens to enclose it (--scratch-dir inside one). A
+// variable the manifest sets on purpose is kept: that is a declared condition.
+func (e Env) confine(copyPath string) []string {
+	walled := Env{Set: make(map[string]string, len(e.Set)+1), Unset: e.Unset}
+	for k, v := range e.Set {
+		walled.Set[k] = v
+	}
+	for _, k := range gitLocation {
+		if _, declared := e.Set[k]; !declared {
+			walled.Unset = append(walled.Unset, k)
+		}
+	}
+	if _, declared := e.Set["GIT_CEILING_DIRECTORIES"]; !declared {
+		walled.Set["GIT_CEILING_DIRECTORIES"] = filepath.Dir(copyPath)
+	}
+	return walled.apply()
+}
+
 // Run executes a command inside the copy and captures its combined output.
 func (d *Dir) Run(command string, timeout time.Duration) (Result, error) {
 	return d.RunWith(command, timeout, Env{})
@@ -316,7 +364,7 @@ func (d *Dir) RunWith(command string, timeout time.Duration, env Env) (Result, e
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "sh", "-c", command) //nolint:gosec // declared by the manifest author
 	cmd.Dir = d.Path
-	cmd.Env = env.apply()
+	cmd.Env = env.confine(d.Path)
 	out, err := cmd.CombinedOutput()
 	if ctx.Err() != nil {
 		return Result{Exit: -1, Output: string(out), TimedOut: true}, nil
@@ -419,13 +467,13 @@ func listTracked(src string) ([]entry, bool, error) {
 
 // listGit lists .git itself, which every other path in this package skips.
 //
-// It is copied verbatim, including the case where .git is a file rather than a
-// directory. Rewriting that file to point back at the original repository would
-// let a command under test write into the repository hullcheck is reading, and
-// "never writes to your repo" is not a guarantee worth trading for a verdict. A
-// linked worktree therefore arrives with a gitdir pointer that goes nowhere:
-// enough for a tool that asks whether it is in a worktree, not enough for one
-// that reads history, which then fails honestly rather than passing quietly.
+// A .git directory is copied verbatim: it is a whole repository, and the copy
+// gets its own. A .git FILE - a linked worktree, or a submodule - is not copied
+// verbatim, because its pointer is usually an absolute path to the real
+// repository. Copied as-is it resolved, and a command under test ran against the
+// real index and refs, and could commit to them. withholdPointer keeps the file,
+// which is enough for a tool that asks whether it is in a worktree, and withholds
+// the way back, so one that reads history fails honestly rather than reaching out.
 func listGit(src string) ([]entry, error) {
 	dot := filepath.Join(src, ".git")
 	st, err := os.Lstat(dot)
@@ -527,6 +575,32 @@ func skipPath(rel string) bool {
 		}
 	}
 	return false
+}
+
+// LinkedAdvice is the fix to print when a git-reading command could not be proven
+// because the copy came from a linked worktree or submodule.
+const LinkedAdvice = "this is a linked worktree or submodule, whose .git points at the real" +
+	" repository; hullcheck withholds that pointer so nothing under test can write to it" +
+	" - run from a standalone clone to prove this"
+
+// withheld is what a copied .git file says instead of where the real repository
+// is. It names a relative path that does not exist inside the copy, so git fails
+// with "not a git repository" instead of finding one.
+const withheld = "gitdir: .hullcheck-withheld-gitdir\n"
+
+// withholdPointer writes a .git file that keeps the shape of a linked worktree
+// and none of its route to the original. Every .git file gets this, at any depth:
+// a nested worktree reached by the directory walk would otherwise carry its real
+// pointer into the copy just the same.
+func withholdPointer(src, dst string) error {
+	st, err := os.Lstat(src)
+	if err != nil || !st.Mode().IsRegular() {
+		return nil //nolint:nilerr // skip what we cannot read, as copyFile does
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o750); err != nil {
+		return err
+	}
+	return os.WriteFile(dst, []byte(withheld), 0o600)
 }
 
 func copyFile(src, dst string) error {

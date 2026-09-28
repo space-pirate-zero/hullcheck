@@ -433,3 +433,50 @@ func TestNeedsGitLetsAGitGateBeProven(t *testing.T) {
 			got.Verdict, got.Why)
 	}
 }
+
+// Verified from a linked worktree, a needs_git gate once ran against the REAL
+// repository through the copied gitdir pointer - here, committing into it. It
+// must now be UNPROVABLE, say why, and leave the real repository untouched.
+func TestNeedsGitFromALinkedWorktreeCannotReachTheRealRepository(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	root := repo(t, map[string]string{"ok.txt": "x"})
+	git := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git(root, "init", "-q")
+	git(root, "add", "-A")
+	git(root, "-c", "user.email=t@e", "-c", "user.name=t", "commit", "-qm", "seed")
+	wt := filepath.Join(t.TempDir(), "wt")
+	git(root, "worktree", "add", "-q", "-b", "side", wt)
+	before := git(wt, "rev-parse", "HEAD")
+
+	m := &manifest.File{Version: 1, Rules: []manifest.Rule{{
+		ID: "R-1", Source: "RULES.md",
+		Gate: &manifest.Gate{
+			Run:         "git -c user.email=t@e -c user.name=t commit -q --allow-empty -m escaped",
+			NeedsGit:    true,
+			FixturePath: "stray.txt", FixtureBody: "x\n",
+		},
+	}}}
+	got := only(t, mustRun(t, m, wt))
+	if got.Verdict != model.Unprovable {
+		t.Errorf("verdict = %q (%s), want UNPROVABLE", got.Verdict, got.Why)
+	}
+	if !strings.Contains(got.Why, "linked worktree") {
+		t.Errorf("the verdict must say why and what to do: %q", got.Why)
+	}
+	if after := git(wt, "rev-parse", "HEAD"); after != before {
+		t.Errorf("the gate under test committed to the real worktree: %s -> %s", before, after)
+	}
+	if log := git(root, "log", "--all", "--oneline"); strings.Contains(log, "escaped") {
+		t.Error("the gate under test wrote a commit into the real repository")
+	}
+}
