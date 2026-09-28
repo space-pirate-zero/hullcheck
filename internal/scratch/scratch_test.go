@@ -581,3 +581,50 @@ func TestAmbientGitLocationIsNotInherited(t *testing.T) {
 		t.Errorf("a declared GIT_DIR must be honoured, got %q", got.Output)
 	}
 }
+
+// A copied .git DIRECTORY can point out too: core.worktree is an absolute path in
+// .git/config, and git in the copy then treats the REAL checkout as its work tree.
+func TestCopiedRepositoryDoesNotKeepAnAbsoluteWorkTree(t *testing.T) {
+	hasGit(t)
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitInit(t, root)
+	if out, err := exec.Command("git", "-C", root, "config", "core.worktree", root).CombinedOutput(); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	d, err := CopyWith(root, Options{IncludeGit: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	got, err := d.Run("git rm -q a.txt", 30*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, serr := os.Stat(filepath.Join(root, "a.txt")); serr != nil {
+		t.Fatalf("a command in the copy deleted a file in the real checkout (exit %d: %s)", got.Exit, got.Output)
+	}
+	if _, serr := os.Stat(filepath.Join(d.Path, "a.txt")); !os.IsNotExist(serr) {
+		t.Errorf("git in the copy must act on the copy (exit %d: %s)", got.Exit, got.Output)
+	}
+}
+
+// A manifest that unsets GIT_CEILING_DIRECTORIES on purpose has declared a
+// condition, and the wall must not quietly put it back.
+func TestDeclaredCeilingUnsetIsHonoured(t *testing.T) {
+	d, err := Empty()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	got, err := d.RunWith("echo [${GIT_CEILING_DIRECTORIES-absent}]", 10*time.Second,
+		Env{Unset: []string{"GIT_CEILING_DIRECTORIES"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got.Output, "[absent]") {
+		t.Errorf("a declared unset must hold, got %q", got.Output)
+	}
+}

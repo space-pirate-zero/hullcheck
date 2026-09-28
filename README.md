@@ -281,7 +281,9 @@ that refuses to run inside a linked worktree can be proven:
       expect_output: "refusing to index"
 ```
 
-A `.git` directory is copied as it is: the copy gets a repository of its own. A `.git`
+A `.git` directory is copied as it is, except that a `core.worktree` setting is
+removed from the copy's config: it is an absolute path to the real checkout, and
+git in the copy would otherwise work on the original files. A `.git`
 **file** (a linked worktree, or a submodule) is kept as a file, but its pointer is
 withheld. The real one is usually an absolute path to the original repository, and
 following it would let a command under test write there. So inside a copy of a

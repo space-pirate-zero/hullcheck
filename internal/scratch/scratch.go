@@ -145,6 +145,12 @@ func CopyWith(src string, opt Options) (*Dir, error) {
 			return nil, err
 		}
 	}
+	if opt.IncludeGit {
+		if err := detachWorkTree(dst); err != nil {
+			_ = os.RemoveAll(dst)
+			return nil, err
+		}
+	}
 	// Empty directories carry meaning for some tools, but only git-tracked
 	// content is copied above, and git does not track them. Restoring the
 	// directory shape of a walked tree keeps the fallback faithful.
@@ -321,7 +327,9 @@ func (e Env) apply() []string {
 // gitLocation are the variables that tell git where a repository is, rather than
 // letting it look. git sets GIT_DIR and GIT_INDEX_FILE for hooks, and a caller may
 // export any of them; inherited, they aim every git command in the copy at the
-// real repository.
+// real repository. (core.worktree is not among them: git reads it only from the
+// repository's own config file, never from `git -c` or GIT_CONFIG_COUNT, so
+// detachWorkTree is the whole of that fix.)
 var gitLocation = []string{
 	"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR",
 	"GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CEILING_DIRECTORIES",
@@ -338,14 +346,27 @@ func (e Env) confine(copyPath string) []string {
 		walled.Set[k] = v
 	}
 	for _, k := range gitLocation {
-		if _, declared := e.Set[k]; !declared {
+		if !e.declares(k) {
 			walled.Unset = append(walled.Unset, k)
 		}
 	}
-	if _, declared := e.Set["GIT_CEILING_DIRECTORIES"]; !declared {
+	if !e.declares("GIT_CEILING_DIRECTORIES") {
 		walled.Set["GIT_CEILING_DIRECTORIES"] = filepath.Dir(copyPath)
 	}
 	return walled.apply()
+}
+
+// declares reports whether the manifest set or unset k on purpose.
+func (e Env) declares(k string) bool {
+	if _, ok := e.Set[k]; ok {
+		return true
+	}
+	for _, u := range e.Unset {
+		if u == k {
+			return true
+		}
+	}
+	return false
 }
 
 // Run executes a command inside the copy and captures its combined output.
@@ -575,6 +596,34 @@ func skipPath(rel string) bool {
 		}
 	}
 	return false
+}
+
+// detachWorkTree makes the copy its own work tree. A .git directory is copied
+// verbatim, and its config may carry core.worktree - an absolute path to the real
+// checkout - which aims every git command in the copy at the original files: a
+// `git rm` in the copy deleted them. The setting is removed from the COPY's config
+// only; the copy's work tree is then the directory it sits in, as git would find it.
+func detachWorkTree(dst string) error {
+	dot := filepath.Join(dst, ".git")
+	if st, err := os.Lstat(dot); err != nil || !st.IsDir() {
+		return nil //nolint:nilerr // no repository in the copy, nothing to detach
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "config", //nolint:gosec // fixed local plumbing
+		"--file", filepath.Join(dot, "config"), "--unset-all", "core.worktree")
+	out, err := cmd.CombinedOutput()
+	var ee *exec.ExitError
+	switch {
+	case err == nil:
+		return nil
+	case errors.As(err, &ee) && ee.ExitCode() == 5:
+		return nil // not set: the usual case
+	case errors.Is(err, exec.ErrNotFound):
+		return nil // no git, so nothing in the copy can follow the setting either
+	default:
+		return fmt.Errorf("detaching the copy's work tree: %v: %s", err, strings.TrimSpace(string(out)))
+	}
 }
 
 // LinkedAdvice is the fix to print when a git-reading command could not be proven
