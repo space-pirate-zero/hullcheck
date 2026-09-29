@@ -1,5 +1,6 @@
-# The documented entry point:
-#   docker run --rm -v "$PWD:/repo:ro" ghcr.io/space-pirate-zero/hullcheck
+# The documented entry point (no image is published yet, so build it from the repo):
+#   docker build -t hullcheck https://github.com/space-pirate-zero/hullcheck.git
+#   docker run --rm -v "$PWD:/repo:ro" hullcheck
 # The mount is read-only, so "never writes to your repository" is enforced by the
 # kernel rather than by our good intentions, and --rm removes the container on exit.
 FROM golang:1.26-alpine AS build

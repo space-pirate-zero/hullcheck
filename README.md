@@ -61,22 +61,29 @@ Identical coverage, wildly different exposure.
 
 ## Add it to CI in one line
 
-**GitHub Actions.** No Go toolchain, no install step, no version for you to maintain:
+**GitHub Actions.** No Go toolchain to install and nothing to publish: the action
+builds itself on the runner.
 
 ```yaml
-- uses: space-pirate-zero/hullcheck@v1
+- uses: space-pirate-zero/hullcheck@8e4d847b6a5bafdaca8e4eb9ab4a7ccd3e4d75e5  # main @ 2026-09-28
 ```
+
+**Pin a commit SHA.** hullcheck has no release tags yet, so `@v1` does not resolve
+and the job dies at `startup_failure` before a step runs. `@main` resolves, but runs
+whatever `main` is today. Use the newest commit on `main`: a SHA is what GitHub
+recommends for any third-party action, because a tag or branch can move under you.
 
 Report first, fail later — start by seeing the number, then ratchet:
 
 ```yaml
-- uses: space-pirate-zero/hullcheck@v1
+- uses: space-pirate-zero/hullcheck@8e4d847b6a5bafdaca8e4eb9ab4a7ccd3e4d75e5
   with:
     fail-under: 60      # omit entirely to report without failing
 ```
 
-It exposes `coverage` and `breaches` as step outputs, so you can post them, chart
-them, or gate on them yourself.
+It exposes `coverage`, `weighted-coverage` and `breaches` as step outputs, so you can
+post them, chart them, or gate on them yourself. Every input is listed in
+[`action.yml`](action.yml).
 
 **Your Go test suite.** One function, no new tooling, runs with `go test`:
 
@@ -103,22 +110,26 @@ failed, not what to fix.
 ```yaml
 repos:
   - repo: https://github.com/space-pirate-zero/hullcheck
-    rev: v0.1.0
+    rev: 8e4d847b6a5bafdaca8e4eb9ab4a7ccd3e4d75e5   # a commit SHA: there are no release tags yet
     hooks:
       - id: hullcheck-fail-under
 ```
 
-**Any other CI, or no CI at all.** One command, nothing installed, repo mounted
-read-only:
+`pre-commit autoupdate --bleeding-edge` moves that pin to the newest commit.
+
+**Any other CI, or no CI at all.** No image is published yet, so build one straight
+from the repository (the only thing it needs is Docker), then run it with your repo
+mounted read-only:
 
 ```sh
-docker run --rm -v "$PWD:/repo:ro" ghcr.io/space-pirate-zero/hullcheck
+docker build -t hullcheck https://github.com/space-pirate-zero/hullcheck.git
+docker run --rm -v "$PWD:/repo:ro" hullcheck
 ```
 
 **Locally.**
 
 ```sh
-go install github.com/space-pirate-zero/hullcheck/cmd/hullcheck@latest
+go install github.com/space-pirate-zero/hullcheck/cmd/hullcheck@latest   # Go 1.26+
 hullcheck .
 ```
 
