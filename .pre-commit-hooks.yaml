@@ -2,7 +2,7 @@
 #
 #   repos:
 #     - repo: https://github.com/space-pirate-zero/hullcheck
-#       rev: v0.1.0
+#       rev: 8e4d847b6a5bafdaca8e4eb9ab4a7ccd3e4d75e5   # a commit SHA: no release tags yet
 #       hooks:
 #         - id: hullcheck
 #
