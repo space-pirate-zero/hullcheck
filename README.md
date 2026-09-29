@@ -65,18 +65,22 @@ Identical coverage, wildly different exposure.
 builds itself on the runner.
 
 ```yaml
-- uses: space-pirate-zero/hullcheck@8e4d847b6a5bafdaca8e4eb9ab4a7ccd3e4d75e5  # main @ 2026-09-28
+- uses: space-pirate-zero/hullcheck@v1
 ```
 
-**Pin a commit SHA.** hullcheck has no release tags yet, so `@v1` does not resolve
-and the job dies at `startup_failure` before a step runs. `@main` resolves, but runs
-whatever `main` is today. Use the newest commit on `main`: a SHA is what GitHub
-recommends for any third-party action, because a tag or branch can move under you.
+**`v1` moves; a SHA does not.** `v1` follows the newest v1 release, so you get fixes
+without editing your workflow. If you would rather nothing change under you until
+you say so, which is what GitHub recommends for any third-party action, pin the
+commit that `v1` points at instead:
+
+```sh
+git ls-remote https://github.com/space-pirate-zero/hullcheck refs/tags/v1
+```
 
 Report first, fail later — start by seeing the number, then ratchet:
 
 ```yaml
-- uses: space-pirate-zero/hullcheck@8e4d847b6a5bafdaca8e4eb9ab4a7ccd3e4d75e5
+- uses: space-pirate-zero/hullcheck@v1
   with:
     fail-under: 60      # omit entirely to report without failing
 ```
@@ -110,12 +114,14 @@ failed, not what to fix.
 ```yaml
 repos:
   - repo: https://github.com/space-pirate-zero/hullcheck
-    rev: 8e4d847b6a5bafdaca8e4eb9ab4a7ccd3e4d75e5   # a commit SHA: there are no release tags yet
+    rev: v1
     hooks:
       - id: hullcheck-fail-under
 ```
 
-`pre-commit autoupdate --bleeding-edge` moves that pin to the newest commit.
+pre-commit caches a repository by its `rev`, so when `v1` moves, run
+`pre-commit clean` to pick the new commit up, or pin a SHA and move it with
+`pre-commit autoupdate`.
 
 **Any other CI, or no CI at all.** No image is published yet, so build one straight
 from the repository (the only thing it needs is Docker), then run it with your repo
