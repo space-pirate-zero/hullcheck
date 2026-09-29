@@ -120,8 +120,9 @@ repos:
 ```
 
 pre-commit caches a repository by its `rev`, so when `v1` moves, run
-`pre-commit clean` to pick the new commit up, or pin a SHA and move it with
-`pre-commit autoupdate`.
+`pre-commit clean` to pick the new commit up. To pin a commit instead, use
+`pre-commit autoupdate --freeze`, which writes the SHA `v1` points at
+(`rev: <sha>  # frozen: v1`). Plain `autoupdate` rewrites a SHA pin back to `v1`.
 
 **Any other CI, or no CI at all.** No image is published yet, so build one straight
 from the repository (the only thing it needs is Docker), then run it with your repo
