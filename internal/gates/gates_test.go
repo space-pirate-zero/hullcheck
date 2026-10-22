@@ -350,3 +350,36 @@ func TestQuotedSrcRootIsTheSpecDirectory(t *testing.T) {
 		}
 	}
 }
+
+// A git hook the repository ships is a gate at the hook's stage, one per command,
+// and a checker it runs is lifted to that stage.
+func TestShippedGitHooksAreGates(t *testing.T) {
+	root := fixture(t, map[string]string{
+		"check_secrets.sh": "exit 0\n",
+		".githooks/pre-push": "#!/bin/sh\n# the local CI\nset -e\nexport GOFLAGS=-mod=mod\n" +
+			"echo running gates\nmake deps\nexec ./check_secrets.sh \\\n  --strict\n",
+		".husky/pre-commit":   "npx lint-staged\n",
+		".husky/post-commit":  "make notify\n",
+		".husky/_/husky.sh":   "make internals\n",
+		".git-hooks/README":   "make docs\n",
+		"scripts/pre-push.sh": "make nothing\n",
+	})
+	gs := Promote(must(Discover(root)))
+	var runs []string
+	for _, g := range gs {
+		if g.Kind == model.KindGitHook {
+			runs = append(runs, string(g.Stage)+" "+g.Run)
+		}
+	}
+	want := []string{ // sorted by gate id: .githooks before .husky
+		"pre-push make deps",
+		"pre-push ./check_secrets.sh --strict",
+		"pre-commit npx lint-staged",
+	}
+	if strings.Join(runs, "|") != strings.Join(want, "|") {
+		t.Errorf("hook gates = %q, want %q", runs, want)
+	}
+	if g, _ := find(gs, "check_secrets.sh"); g.Stage != model.PrePush {
+		t.Errorf("check_secrets.sh stage = %q, want pre-push - the hook runs it", g.Stage)
+	}
+}

@@ -4,12 +4,18 @@ BIN := hullcheck
 VERSION ?= dev
 MODULE := github.com/space-pirate-zero/hullcheck
 
-.PHONY: all check fmt vet test deps network readonly secrets dogfood refusals build clean
+.PHONY: all check hooks fmt vet test deps network readonly secrets dogfood refusals build clean
 
 all: check
 
 ## check: the full gate suite, in the order that fails cheapest first
+## This is the CI. It runs locally, before every push (see hooks), and nowhere else.
 check: fmt vet deps network secrets test readonly dogfood refusals
+
+## hooks: run every check gate before each push from this clone. Once per clone.
+hooks:
+	@git config core.hooksPath .githooks
+	@echo "hooks ok (pre-push runs the check gates)"
 
 ## fmt: every file gofmt-clean (CONTRIBUTING 1.3)
 fmt:

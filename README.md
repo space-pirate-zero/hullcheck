@@ -643,7 +643,7 @@ Built: the reading, verified mode with the control run, Time-to-Truth, drift, PR
 mode, path coverage, gate bus-factor, ungoverned-since, the badge, the refusal and
 provenance audits, and all six assist commands.
 
-**hullcheck proves its own refusals**, in CI, on every pull request.
+**hullcheck proves its own refusals** in its pre-push hook, before every push.
 
 **hullcheck verifies its own repository**: four gates declared with fixtures, all
 four proven by breaking the rule and watching the gate fail. The first verified

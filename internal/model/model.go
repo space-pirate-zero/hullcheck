@@ -58,7 +58,10 @@ const (
 	PreCommit Stage = "pre-commit"
 	// Build: a build phase of the project itself, such as an Xcode run-script
 	// phase. It runs on every local build, before anything reaches a commit.
-	Build   Stage = "build"
+	Build Stage = "build"
+	// PrePush: a git pre-push hook. It runs when work leaves the machine, which
+	// is before any pull request can exist, but after commits have piled up.
+	PrePush Stage = "pre-push"
 	PullReq Stage = "pull-request"
 	Nightly Stage = "nightly"
 	Release Stage = "release"
@@ -77,6 +80,8 @@ func (s Stage) Latency() int {
 		return 10
 	case Build:
 		return 2 * 60
+	case PrePush:
+		return 5 * 60
 	case PullReq:
 		return 12 * 60
 	case Nightly:
@@ -91,7 +96,7 @@ func (s Stage) Latency() int {
 // Ladder is the Time-to-Truth ladder, fastest first. It is the one place the
 // order is written down: Rank reads it, and so does every report that prints
 // the ladder, so a stage cannot be ranked and then left out of the table.
-var Ladder = []Stage{PreCommit, Build, PullReq, Nightly, Release, Manual}
+var Ladder = []Stage{PreCommit, Build, PrePush, PullReq, Nightly, Release, Manual}
 
 // Rank orders stages fastest to slowest for sorting and for picking the best
 // gate when a rule has several. Never, and anything not on the ladder, is last.
@@ -117,6 +122,9 @@ const (
 	// KindBuildPhase is a script the project's own build runs, e.g. an Xcode
 	// pre- or post-build script declared in an xcodegen project.yml.
 	KindBuildPhase Kind = "build-phase"
+	// KindGitHook is a command in a git hook script the repository ships, e.g.
+	// .githooks/pre-push, so the hooks are versioned and reviewed like code.
+	KindGitHook Kind = "git-hook"
 )
 
 // Rule is a stated constraint found in a policy document.

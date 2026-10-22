@@ -59,6 +59,8 @@ func Discover(root string) ([]model.Gate, error) {
 			out = append(out, makeGates(path, rel)...)
 		case name == "project.yml", name == "project.yaml":
 			out = append(out, xcodegenGates(path, rel)...)
+		case hookStage(rel) != "":
+			out = append(out, hookGates(path, rel, hookStage(rel))...)
 		case strings.HasSuffix(name, ".rego"):
 			out = append(out, model.Gate{
 				ID: gid(rel, name), Kind: model.KindOPA, File: rel, Line: 1,
@@ -477,6 +479,71 @@ func srcRoot(script, dir string) string {
 		}
 	}
 	return script
+}
+
+// hookDirs are where a repository keeps git hooks it ships, enabled with
+// `git config core.hooksPath <dir>` or by husky. .git/hooks is not among them:
+// nothing there is versioned, so nothing there is a claim the repository makes.
+var hookDirs = map[string]bool{".githooks": true, ".git-hooks": true, "githooks": true, ".husky": true}
+
+// hookStage is the stage of the git hook at rel, or "" when rel is not a hook
+// that can stop work: a post- hook runs after the fact and fails nothing.
+func hookStage(rel string) model.Stage {
+	if !hookDirs[filepath.Base(filepath.Dir(rel))] {
+		return ""
+	}
+	switch filepath.Base(rel) {
+	case "pre-commit", "prepare-commit-msg", "commit-msg", "pre-merge-commit":
+		return model.PreCommit
+	case "pre-push":
+		return model.PrePush
+	}
+	return ""
+}
+
+// hookGates makes each command in a hook script a gate, as each run step of a CI
+// job is. Lines that set the shell up or only talk cannot fail anything, so they
+// are not gates.
+func hookGates(path, rel string, stage model.Stage) []model.Gate {
+	lines, err := readLines(path)
+	if err != nil {
+		return nil
+	}
+	hook := filepath.Base(rel)
+	var out []model.Gate
+	for i := 0; i < len(lines); i++ {
+		n := i + 1
+		cmd := strings.TrimSpace(lines[i])
+		for strings.HasSuffix(cmd, "\\") && i+1 < len(lines) {
+			i++
+			cmd = strings.TrimSpace(strings.TrimSuffix(cmd, "\\")) + " " + strings.TrimSpace(lines[i])
+		}
+		cmd = strings.TrimSpace(strings.TrimPrefix(cmd, "exec "))
+		if cmd == "" || strings.HasPrefix(cmd, "#") || !hookCommand(cmd) {
+			continue
+		}
+		out = append(out, model.Gate{
+			ID: fmt.Sprintf("%s::%d", rel, n), Kind: model.KindGitHook,
+			File: rel, Line: n, Name: hook, Run: cmd, Stage: stage,
+		})
+	}
+	return out
+}
+
+// hookCommand reports whether a hook line runs something that can fail.
+func hookCommand(cmd string) bool {
+	first := strings.Fields(cmd)[0]
+	switch first {
+	case "set", "export", "unset", ".", "source", "cd", "echo", "printf", "exit",
+		"true", ":", "if", "then", "else", "elif", "fi", "for", "while", "until",
+		"do", "done", "case", "esac", "{", "}", ";;", "local", "readonly":
+		return false
+	}
+	// A bare assignment, NAME=value, sets a variable and runs nothing.
+	if eq := strings.Index(first, "="); eq > 0 && first == cmd {
+		return false
+	}
+	return true
 }
 
 func isCheckish(s string) bool {

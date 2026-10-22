@@ -1,8 +1,12 @@
 # Contributing to hullcheck
 
 Every rule below names the gate that enforces it. If you add a rule here without a
-gate, `hullcheck` will report it as a BREACH against its own repository, and CI will
-fail. That is deliberate — this project has to survive its own tool.
+gate, `hullcheck` will report it as a BREACH against its own repository, and
+`make check` will fail. That is deliberate — this project has to survive its own tool.
+
+CI here is local. There is no hosted CI: `make check` runs every gate, and the
+pre-push hook (`.githooks/pre-push`) runs the same gates before anything leaves your
+machine. Enable the hook once per clone with `make hooks`.
 
 ## 1. Engineering rules
 

@@ -1,0 +1,23 @@
+#!/bin/sh
+# pre-push - this repository's CI. Every gate runs here, on the machine that is
+# pushing, and nowhere else: hullcheck has no hosted CI.
+#
+# Enable it once per clone with `make hooks`. `git push --no-verify` skips it, the
+# same as skipping any other required check, so do not.
+#
+# One gate per line, in `make check` order, so hullcheck reads each as its own
+# gate. localci_test.go fails if this list and `check:` ever disagree.
+set -e
+# git hands a hook GIT_DIR and friends. The tests build throwaway repositories,
+# and with those set every one of them would run against this repository instead:
+# the first run flipped core.bare and wrote a test user into .git/config.
+for v in $(git rev-parse --local-env-vars); do unset "$v"; done
+make fmt
+make vet
+make deps
+make network
+make secrets
+make test
+make readonly
+make dogfood
+make refusals

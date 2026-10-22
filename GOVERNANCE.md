@@ -31,6 +31,6 @@ loaded code. A supply-chain-adjacent tool that executes third-party plugins is a
 
 ## Changing a rule in CONTRIBUTING.md
 
-Adding a rule without adding its gate will fail CI, by design. If a rule genuinely
-cannot be mechanised, that is a finding worth discussing in the pull request — a rule
-nobody can test is a rule nobody can follow.
+Adding a rule without adding its gate will fail `make check`, and so the push, by
+design. If a rule genuinely cannot be mechanised, that is a finding worth discussing
+in the pull request — a rule nobody can test is a rule nobody can follow.
