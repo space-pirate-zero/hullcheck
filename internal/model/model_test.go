@@ -63,3 +63,15 @@ func TestFakeIsNeverCountedAsCovered(t *testing.T) {
 		t.Fatalf("coverage = %v, want 0.5 - FAKE must not count as covered", got)
 	}
 }
+
+// Every stage a gate can be given is on the ladder, so the report prints it.
+func TestEveryStageIsOnTheLadder(t *testing.T) {
+	for _, s := range []Stage{PreCommit, Build, PullReq, Nightly, Release, Manual} {
+		if s.Rank() >= len(Ladder) {
+			t.Errorf("%s is not on the ladder; the Time-to-Truth table would omit it", s)
+		}
+	}
+	if Never.Rank() != len(Ladder) {
+		t.Errorf("never must rank after the whole ladder")
+	}
+}

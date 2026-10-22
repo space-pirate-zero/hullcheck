@@ -127,3 +127,29 @@ func TestBuildPhaseGateReadsAsBuildStage(t *testing.T) {
 		t.Errorf("stage = %q, want build - every local build runs the gate", got)
 	}
 }
+
+// Xcode runs build phases with a bare PATH, so a phase's script commonly fixes
+// PATH first and calls the checker after. The checker is still run by every build.
+func TestCheckerAfterTheFirstLineOfABuildScriptReadsAsBuild(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "CLAUDE.md", "# Rules\n\n"+
+		"- Portraits must always be conditioned on the reference photos.\n"+
+		"  *Gate: `scripts/likeness_guard.sh`*\n")
+	write(t, root, "scripts/likeness_guard.sh", "exit 0\n")
+	write(t, root, "project.yml", "targets:\n  App:\n    preBuildScripts:\n"+
+		"      - name: policy\n        script: |\n"+
+		"          export PATH=\"$PATH:/opt/homebrew/bin\"\n"+
+		"          \"${SRCROOT}/scripts/likeness_guard.sh\"\n")
+
+	rep, err := Run(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Findings) != 1 {
+		t.Fatalf("got %d findings, want 1", len(rep.Findings))
+	}
+	f := rep.Findings[0]
+	if f.Stage() != "build" {
+		t.Errorf("stage = %q, want build - the build phase calls the checker on its second line: %+v", f.Stage(), f.Gates)
+	}
+}

@@ -88,25 +88,20 @@ func (s Stage) Latency() int {
 	}
 }
 
+// Ladder is the Time-to-Truth ladder, fastest first. It is the one place the
+// order is written down: Rank reads it, and so does every report that prints
+// the ladder, so a stage cannot be ranked and then left out of the table.
+var Ladder = []Stage{PreCommit, Build, PullReq, Nightly, Release, Manual}
+
 // Rank orders stages fastest to slowest for sorting and for picking the best
-// gate when a rule has several.
+// gate when a rule has several. Never, and anything not on the ladder, is last.
 func (s Stage) Rank() int {
-	switch s {
-	case PreCommit:
-		return 0
-	case Build:
-		return 1
-	case PullReq:
-		return 2
-	case Nightly:
-		return 3
-	case Release:
-		return 4
-	case Manual:
-		return 5
-	default:
-		return 6
+	for i, st := range Ladder {
+		if st == s {
+			return i
+		}
 	}
+	return len(Ladder)
 }
 
 // Kind is how a gate is executed.

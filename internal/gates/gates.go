@@ -321,28 +321,33 @@ func xcodegenGates(path, rel string) []model.Gate {
 	}
 	dir := filepath.ToSlash(filepath.Dir(rel))
 	var (
-		out                  []model.Gate
-		inTargets            bool
-		targetIndent         = -1
-		target               string
-		phaseIndent          = -1
-		blockIndent          = -1
-		itemLine             int
-		itemName, itemScript string
+		out          []model.Gate
+		inTargets    bool
+		targetIndent = -1
+		target       string
+		phaseIndent  = -1
+		blockIndent  = -1
+		itemLine     int
+		itemName     string
+		itemCmds     []command
 	)
+	// A phase is a gate per command its script runs: a checker called on the
+	// third line of a script is run by every build as surely as one on the first.
 	flush := func() {
-		if itemLine > 0 && itemScript != "" {
-			out = append(out, model.Gate{
-				ID:    fmt.Sprintf("%s::%s::%d", rel, target, itemLine),
-				Kind:  model.KindBuildPhase,
-				File:  rel,
-				Line:  itemLine,
-				Name:  orDefault(itemName, target),
-				Run:   itemScript,
-				Stage: model.Build,
-			})
+		if itemLine > 0 {
+			for _, c := range itemCmds {
+				out = append(out, model.Gate{
+					ID:    fmt.Sprintf("%s::%s::%d", rel, target, c.line),
+					Kind:  model.KindBuildPhase,
+					File:  rel,
+					Line:  c.line,
+					Name:  orDefault(itemName, target),
+					Run:   srcRoot(c.run, dir),
+					Stage: model.Build,
+				})
+			}
 		}
-		itemLine, itemName, itemScript = 0, "", ""
+		itemLine, itemName, itemCmds = 0, "", nil
 	}
 	for i, line := range lines {
 		if strings.TrimSpace(line) == "" {
@@ -397,25 +402,39 @@ func xcodegenGates(path, rel string) []model.Gate {
 			flush()
 			itemLine = i + 1
 		}
-		if blockScalar(val) {
-			val = firstBlockLine(lines, i+1)
-		}
 		switch key {
 		case "name":
 			itemName = unquoteYAML(val)
 		case "script":
-			itemScript = srcRoot(unquoteYAML(val), dir)
+			if blockScalar(val) {
+				itemCmds = shellCommands(blockBody(lines, i+1, blockIndent), i+2)
+			} else {
+				itemCmds = shellCommands([]string{unquoteYAML(val)}, i+1)
+			}
 		case "path":
 			// A path: phase runs a file, relative to the spec's directory.
-			if p := unquoteYAML(val); p != "" && itemScript == "" {
+			if p := unquoteYAML(val); p != "" && len(itemCmds) == 0 {
 				if !strings.HasPrefix(p, "/") && !strings.Contains(p, "$") {
 					p = filepath.ToSlash(filepath.Join(dir, p))
 				}
-				itemScript = p
+				itemCmds = []command{{line: i + 1, run: p}}
 			}
 		}
 	}
 	flush()
+	return out
+}
+
+// blockBody is the body of a block scalar starting at lines[from]: every line
+// indented past the key that opened it, blank lines included.
+func blockBody(lines []string, from, keyCol int) []string {
+	var out []string
+	for _, l := range lines[from:] {
+		if strings.TrimSpace(l) != "" && len(l)-len(strings.TrimLeft(l, " ")) <= keyCol {
+			break
+		}
+		out = append(out, l)
+	}
 	return out
 }
 
@@ -450,8 +469,11 @@ func srcRoot(script, dir string) string {
 		repl = dir + "/"
 	}
 	for _, v := range []string{"SRCROOT", "PROJECT_DIR"} {
-		for _, form := range []string{"${" + v + "}/", "$(" + v + ")/", "$" + v + "/"} {
-			script = strings.ReplaceAll(script, form, repl)
+		for _, ref := range []string{"${" + v + "}", "$(" + v + ")", "$" + v} {
+			// "${SRCROOT}"/x.sh quotes only the variable; the path is the same.
+			for _, form := range []string{`"` + ref + `"/`, ref + "/"} {
+				script = strings.ReplaceAll(script, form, repl)
+			}
 		}
 	}
 	return script
@@ -506,4 +528,95 @@ func invokes(run string, g model.Gate) bool {
 		return strings.Contains(run, "make "+g.Name)
 	}
 	return strings.Contains(run, g.File) || strings.Contains(run, g.Name)
+}
+
+// command is one line of shell that runs something able to fail.
+type command struct {
+	line int // 1-based line in the file
+	run  string
+}
+
+var (
+	reFuncHeader = regexp.MustCompile(`^(?:function\s+[A-Za-z_][\w-]*|[A-Za-z_][\w-]*\s*\(\))\s*\{?$`)
+	reHeredoc    = regexp.MustCompile(`<<-?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?`)
+)
+
+// shellCommands reads lines of a shell script, the first of which is line first
+// of its file, and returns the commands in it that can fail - each a gate, as
+// each run step of a CI job is.
+//
+// It reads shapes, not shell. A guard keeps its command ("if ! make lint; then"
+// runs make lint), a command that is told it may not fail ("|| true") is not a
+// gate, and lines that only set the shell up, print, or open a function, a loop
+// or a heredoc body run nothing that can stop the work.
+func shellCommands(lines []string, first int) []command {
+	var out []command
+	heredoc := ""
+	for i := 0; i < len(lines); i++ {
+		n := first + i
+		cmd := strings.TrimSpace(lines[i])
+		if heredoc != "" {
+			if cmd == heredoc {
+				heredoc = ""
+			}
+			continue
+		}
+		for strings.HasSuffix(cmd, "\\") && i+1 < len(lines) {
+			i++
+			cmd = strings.TrimSpace(strings.TrimSuffix(cmd, "\\")) + " " + strings.TrimSpace(lines[i])
+		}
+		if m := reHeredoc.FindStringSubmatch(cmd); m != nil {
+			heredoc = m[1]
+		}
+		if run, ok := shellCommand(cmd); ok {
+			out = append(out, command{line: n, run: run})
+		}
+	}
+	return out
+}
+
+// shellCommand reduces one line to the command it runs, or reports that it runs
+// nothing that can fail.
+func shellCommand(cmd string) (string, bool) {
+	if cmd == "" || strings.HasPrefix(cmd, "#") || reFuncHeader.MatchString(cmd) {
+		return "", false
+	}
+	// "for f in *.sh; do shellcheck "$f"; done" runs its body. A while or until
+	// loop is the other way round: its condition is the command.
+	if i := strings.Index(cmd, "; do "); i >= 0 && strings.HasPrefix(cmd, "for ") {
+		cmd = strings.TrimSuffix(strings.TrimSpace(cmd[i+len("; do "):]), "; done")
+	}
+	// The condition of a guard is the command; what follows "; then" is how the
+	// script reports the failure, not a second gate.
+	for _, sep := range []string{"; then", "; do"} {
+		if i := strings.Index(cmd, sep); i >= 0 {
+			cmd = cmd[:i]
+		}
+	}
+	for {
+		f := strings.Fields(cmd)
+		if len(f) == 0 {
+			return "", false
+		}
+		switch f[0] {
+		case "if", "elif", "while", "until", "then", "else", "do", "!", "exec":
+			cmd = strings.TrimSpace(strings.TrimPrefix(cmd, f[0]))
+			continue
+		case "set", "export", "unset", ".", "source", "cd", "echo", "printf", "exit",
+			"return", "true", ":", "fi", "for", "done", "case", "esac", "{", "}", ";;",
+			"local", "readonly", "shift", "trap", "wait":
+			return "", false
+		}
+		// A bare assignment, NAME=value, sets a variable and runs nothing.
+		if strings.Index(f[0], "=") > 0 && len(f) == 1 {
+			return "", false
+		}
+		break
+	}
+	for _, never := range []string{"|| true", "|| :", "|| exit 0"} {
+		if strings.HasSuffix(cmd, never) {
+			return "", false
+		}
+	}
+	return cmd, true
 }

@@ -13,11 +13,6 @@ import (
 	"github.com/space-pirate-zero/hullcheck/internal/model"
 )
 
-// stages is the Time-to-Truth ladder, fastest first.
-var stages = []model.Stage{
-	model.PreCommit, model.Build, model.PullReq, model.Nightly, model.Release, model.Manual,
-}
-
 // TTT summarises how long a violation survives before something catches it.
 type TTT struct {
 	ByStage map[model.Stage]int `json:"by_stage"`
@@ -141,7 +136,7 @@ func Text(w io.Writer, r model.Report, verified, manifest bool) {
 	}
 	fmt.Fprintf(w, "  TIME-TO-TRUTH        p50 %-6s p90 %-6s worst %s\n",
 		Duration(t.P50), Duration(t.P90), worst)
-	for _, st := range stages {
+	for _, st := range model.Ladder {
 		if n := t.ByStage[st]; n > 0 {
 			fmt.Fprintf(w, "    %-13s %3d gates   %s\n", st, n, Duration(st.Latency()))
 		}

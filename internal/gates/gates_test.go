@@ -1,8 +1,10 @@
 package gates
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/space-pirate-zero/hullcheck/internal/model"
@@ -198,9 +200,10 @@ targets:
         basedOnDependencyAnalysis: false
     postCompileScripts:
     - script: |
-        set -e
-        name: not-a-key
+        export PATH="$PATH:/opt/homebrew/bin"
         swiftlint --strict
+        "${SRCROOT}"/scripts/check_style.sh
+        swiftformat --lint . || true
       name: Lint
     info:
       path: AppEntry/Info.plist
@@ -220,32 +223,26 @@ schemes:
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, tc := range []struct{ name, run, file string }{
-		{"hullcheck", `"scripts/hullcheck.sh"`, "project.yml"},
-		{"Lint", "set -e", "project.yml"},
-		{"Verify bundle", "scripts/verify_bundle.sh", "project.yml"},
-	} {
-		g, ok := find(gs, tc.name)
-		if !ok {
-			t.Errorf("build phase %q not found: %+v", tc.name, gs)
+	// One gate per command a phase runs. The PATH line and the "|| true" line
+	// cannot fail the build; Info.plist's path: belongs to the target.
+	var got []string
+	for _, g := range gs {
+		if g.Kind != model.KindBuildPhase {
 			continue
 		}
-		if g.Stage != model.Build || g.Kind != model.KindBuildPhase {
-			t.Errorf("%s: stage %q kind %q, want build / build-phase", tc.name, g.Stage, g.Kind)
+		if g.Stage != model.Build {
+			t.Errorf("%s: stage %q, want build", g.ID, g.Stage)
 		}
-		if g.Run != tc.run {
-			t.Errorf("%s: run = %q, want %q", tc.name, g.Run, tc.run)
-		}
+		got = append(got, g.Name+": "+g.Run)
 	}
-	// Info.plist's path: belongs to the target, not to a build phase, and a block
-	// scalar's body is shell however much it looks like a key.
-	for _, bad := range []string{"not-a-key", "PhantomTiles"} {
-		if _, ok := find(gs, bad); ok {
-			t.Errorf("%q is not a build phase: %+v", bad, gs)
-		}
+	want := []string{
+		`hullcheck: "scripts/hullcheck.sh"`,
+		"Lint: swiftlint --strict",
+		"Lint: scripts/check_style.sh",
+		"Verify bundle: scripts/verify_bundle.sh",
 	}
-	if n := countKind(gs, model.KindBuildPhase); n != 3 {
-		t.Errorf("found %d build phases, want 3: %+v", n, gs)
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("build phase gates = %q, want %q", got, want)
 	}
 
 	gs = Promote(gs)
@@ -305,4 +302,51 @@ func must(gs []model.Gate, err error) []model.Gate {
 		panic(err)
 	}
 	return gs
+}
+
+func TestShellCommandsKeepWhatCanFail(t *testing.T) {
+	script := []string{
+		"#!/bin/sh",
+		"set -e",
+		"export PATH=/opt/bin:$PATH",
+		"GOFLAGS=-mod=mod",
+		`echo "running gates"`,
+		"if ! npm test; then echo fail; exit 1; fi",
+		"then make vet",
+		"for f in scripts/*.sh; do shellcheck \"$f\"; done",
+		"while make wait-ready; do sleep 1; done",
+		"npm run lint || true",
+		"lint() {",
+		"  exec make lint \\",
+		"    --strict",
+		"}",
+		"cat <<EOF",
+		"make not-a-gate",
+		"EOF",
+		"GOFLAGS=-mod=mod go test ./...",
+	}
+	var got []string
+	for _, c := range shellCommands(script, 1) {
+		got = append(got, fmt.Sprintf("%d %s", c.line, c.run))
+	}
+	want := []string{
+		"6 npm test", "7 make vet", `8 shellcheck "$f"`, "9 make wait-ready",
+		"12 make lint --strict", "15 cat <<EOF", "18 GOFLAGS=-mod=mod go test ./...",
+	}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("commands =\n  %q\nwant\n  %q", got, want)
+	}
+}
+
+func TestQuotedSrcRootIsTheSpecDirectory(t *testing.T) {
+	for _, tc := range []struct{ in, dir, want string }{
+		{`"${SRCROOT}"/scripts/x.sh`, "ios", "ios/scripts/x.sh"},
+		{`"${SRCROOT}/scripts/x.sh"`, ".", `"scripts/x.sh"`},
+		{`$(PROJECT_DIR)/x.sh --fast`, ".", "x.sh --fast"},
+		{`"$SRCROOT"/x.sh`, "app", "app/x.sh"},
+	} {
+		if got := srcRoot(tc.in, tc.dir); got != tc.want {
+			t.Errorf("srcRoot(%q, %q) = %q, want %q", tc.in, tc.dir, got, tc.want)
+		}
+	}
 }
