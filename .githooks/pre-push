@@ -12,6 +12,8 @@ set -e
 # and with those set every one of them would run against this repository instead:
 # the first run flipped core.bare and wrote a test user into .git/config.
 for v in $(git rev-parse --local-env-vars); do unset "$v"; done
+# Run in a scratch worktree of each commit being pushed, not the checkout.
+. "$(dirname "$0")/pushed.sh"
 make fmt
 make vet
 make deps
