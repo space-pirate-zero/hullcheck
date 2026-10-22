@@ -25,3 +25,6 @@ tree=$(mktemp -d)
 git worktree add -q --detach "$tree" "$HULLCHECK_PUSHED"
 trap 'cd "$repo" && git worktree remove --force "$tree"' EXIT
 cd "$tree"
+# Only this hook's re-run may see it. Left exported, every gate inherits it, and
+# a test that runs a hook of its own would take itself for a re-run.
+unset HULLCHECK_PUSHED

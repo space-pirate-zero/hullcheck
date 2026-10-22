@@ -72,7 +72,7 @@ func TestPrePushChecksThePushedCommitNotTheCheckout(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "runs")
 	var env []string
 	for _, kv := range os.Environ() {
-		if !strings.HasPrefix(kv, "GIT_") {
+		if !strings.HasPrefix(kv, "GIT_") && !strings.HasPrefix(kv, "HULLCHECK_PUSHED=") {
 			env = append(env, kv)
 		}
 	}
