@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -412,5 +413,55 @@ func TestANonExecutableHookIsNotAGate(t *testing.T) {
 	root := fixture(t, map[string]string{".githooks/pre-push": "make deps\n"})
 	if gs, _ := Discover(root); countKind(gs, model.KindGitHook) != 0 {
 		t.Errorf("a hook git will not run was counted: %+v", gs)
+	}
+}
+
+// An aggregate target's buildScripts run when it builds. A template's scripts run
+// in the targets that use it - directly or through another template - and nowhere
+// if nothing does.
+func TestXcodegenAggregatesAndTemplates(t *testing.T) {
+	root := fixture(t, map[string]string{
+		"project.yml": `name: App
+targetTemplates:
+  Policy:
+    templates: [Lintable]
+    preBuildScripts:
+      - name: policy
+        script: scripts/check_policy.sh
+  Lintable:
+    postCompileScripts:
+      - name: lint
+        script: swiftlint --strict
+  Unused:
+    preBuildScripts:
+      - name: never-runs
+        script: scripts/check_unused.sh
+targets:
+  App:
+    type: application
+    templates:
+      - Policy
+aggregateTargets:
+  Release:
+    targets: [App]
+    buildScripts:
+      - name: gate
+        script: make verify
+`,
+	})
+	gs, err := Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, g := range gs {
+		if g.Kind == model.KindBuildPhase {
+			got = append(got, g.Name+": "+g.Run)
+		}
+	}
+	slices.Sort(got)
+	want := []string{"gate: make verify", "lint: swiftlint --strict", "policy: scripts/check_policy.sh"}
+	if !slices.Equal(got, want) {
+		t.Errorf("build phase gates = %q, want %q (Unused applies to no target)", got, want)
 	}
 }

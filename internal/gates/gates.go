@@ -304,19 +304,26 @@ func makeGates(path, rel string) []model.Gate {
 	return out
 }
 
-// buildPhases are the xcodegen target keys whose scripts Xcode runs as build
-// phases, on every build of the target.
-var buildPhases = map[string]bool{
-	"preBuildScripts": true, "postCompileScripts": true, "postBuildScripts": true,
+// buildPhases are, per top-level section of an xcodegen spec, the keys whose
+// scripts Xcode runs as build phases on every build of the target.
+var buildPhases = map[string]map[string]bool{
+	"targets":          {"preBuildScripts": true, "postCompileScripts": true, "postBuildScripts": true},
+	"targetTemplates":  {"preBuildScripts": true, "postCompileScripts": true, "postBuildScripts": true},
+	"aggregateTargets": {"buildScripts": true},
 }
 
-// xcodegenGates reads the build-phase scripts of an xcodegen spec: under
-// targets.<name>, each item of preBuildScripts, postCompileScripts and
-// postBuildScripts that has a script: or a path:. Like a CI run step, every
-// one is a potential gate; unlike one, it runs on every local build.
+// xcodegenGates reads the build-phase scripts of an xcodegen spec: each item
+// with a script: or a path: under targets.<name> (preBuildScripts,
+// postCompileScripts, postBuildScripts) and aggregateTargets.<name>
+// (buildScripts). Like a CI run step, every command is a potential gate; unlike
+// one, it runs on every local build.
 //
-// A file called project.yml that has no top-level targets: is not an xcodegen
-// spec, and yields nothing.
+// A targetTemplates script runs only in the targets that use its template, so it
+// is a gate only when some target lists the template under templates:, directly
+// or through another template. A template nothing uses runs nowhere.
+//
+// A file called project.yml with none of those sections is not an xcodegen spec,
+// and yields nothing.
 func xcodegenGates(path, rel string) []model.Gate {
 	lines, err := readLines(path)
 	if err != nil {
@@ -325,21 +332,31 @@ func xcodegenGates(path, rel string) []model.Gate {
 	dir := filepath.ToSlash(filepath.Dir(rel))
 	var (
 		out          []model.Gate
-		inTargets    bool
+		section      string
 		targetIndent = -1
 		target       string
 		phaseIndent  = -1
 		blockIndent  = -1
+		listIndent   = -1 // an open block list of templates:
 		itemLine     int
 		itemName     string
 		itemCmds     []command
+		templated    = map[string][]model.Gate{}
+		uses         = map[string][]string{} // target or template -> templates it uses
 	)
+	use := func(names ...string) {
+		for _, n := range names {
+			if n = unquoteYAML(strings.Trim(strings.TrimSpace(n), "[]")); n != "" {
+				uses[section+"/"+target] = append(uses[section+"/"+target], n)
+			}
+		}
+	}
 	// A phase is a gate per command its script runs: a checker called on the
 	// third line of a script is run by every build as surely as one on the first.
 	flush := func() {
 		if itemLine > 0 {
 			for _, c := range itemCmds {
-				out = append(out, model.Gate{
+				g := model.Gate{
 					ID:    fmt.Sprintf("%s::%s::%d", rel, target, c.line),
 					Kind:  model.KindBuildPhase,
 					File:  rel,
@@ -347,7 +364,12 @@ func xcodegenGates(path, rel string) []model.Gate {
 					Name:  orDefault(itemName, target),
 					Run:   srcRoot(c.run, dir),
 					Stage: model.Build,
-				})
+				}
+				if section == "targetTemplates" {
+					templated[target] = append(templated[target], g)
+				} else {
+					out = append(out, g)
+				}
 			}
 		}
 		itemLine, itemName, itemCmds = 0, "", nil
@@ -356,36 +378,48 @@ func xcodegenGates(path, rel string) []model.Gate {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
+		indent := len(line) - len(strings.TrimLeft(line, " "))
 		// The body of a block scalar is shell, not keys, however it reads.
-		if blockIndent >= 0 && len(line)-len(strings.TrimLeft(line, " ")) > blockIndent {
+		if blockIndent >= 0 && indent > blockIndent {
 			continue
 		}
 		blockIndent = -1
 		if reComment.MatchString(line) {
 			continue
 		}
+		if listIndent >= 0 {
+			if it := reListItem.FindStringSubmatch(line); it != nil && indent >= listIndent && !reYAMLKey.MatchString(line) {
+				use(it[1])
+				continue
+			}
+			listIndent = -1
+		}
 		m := reYAMLKey.FindStringSubmatch(line)
 		if m == nil {
 			continue
 		}
-		indent, key, val := len(m[1]), m[2], strings.TrimSpace(m[3])
+		key, val := m[2], strings.TrimSpace(m[3])
+		indent = len(m[1])
 		item := strings.HasPrefix(strings.TrimSpace(line), "-")
 		if blockScalar(val) {
 			// Measured from the key, not the dash: in "- script: |" the block
 			// and the item's next key are both indented past the dash.
 			blockIndent = strings.Index(line, key)
 		}
-		// Leaving a list item, a phase list, a target or targets: closes it.
+		// Leaving a list item, a phase list, a target or a section closes it.
 		if phaseIndent >= 0 && (indent < phaseIndent || indent == phaseIndent && !item) {
 			flush()
 			phaseIndent = -1
 		}
 		if indent == 0 {
 			flush()
-			inTargets, targetIndent, target = key == "targets" && val == "", -1, ""
+			section, targetIndent, target = "", -1, ""
+			if buildPhases[key] != nil && val == "" {
+				section = key
+			}
 			continue
 		}
-		if !inTargets {
+		if section == "" {
 			continue
 		}
 		if targetIndent < 0 {
@@ -396,7 +430,14 @@ func xcodegenGates(path, rel string) []model.Gate {
 			continue
 		}
 		if phaseIndent < 0 {
-			if buildPhases[key] && val == "" && target != "" {
+			switch {
+			case key == "templates" && !item:
+				if val == "" {
+					listIndent = indent
+				} else {
+					use(strings.Split(val, ",")...)
+				}
+			case buildPhases[section][key] && val == "" && target != "":
 				phaseIndent = indent
 			}
 			continue
@@ -425,6 +466,31 @@ func xcodegenGates(path, rel string) []model.Gate {
 		}
 	}
 	flush()
+
+	// A template applies where a target uses it, or uses a template that does.
+	applied := map[string]bool{}
+	var walk func(string)
+	walk = func(tmpl string) {
+		if applied[tmpl] {
+			return
+		}
+		applied[tmpl] = true
+		for _, next := range uses["targetTemplates/"+tmpl] {
+			walk(next)
+		}
+	}
+	for owner, ts := range uses {
+		if !strings.HasPrefix(owner, "targetTemplates/") {
+			for _, t := range ts {
+				walk(t)
+			}
+		}
+	}
+	for tmpl, gs := range templated {
+		if applied[tmpl] {
+			out = append(out, gs...)
+		}
+	}
 	return out
 }
 
