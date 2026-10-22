@@ -182,3 +182,24 @@ func TestAtRefusesOptionShapedRef(t *testing.T) {
 		t.Errorf("a ref wrote outside the repository: %q, %v", b, err)
 	}
 }
+
+// An evening commit west of Greenwich is dated the day its author made it, not
+// the next day in UTC; a rule nobody has committed has no date at all.
+func TestUngovernedSinceIsTheAuthorsDate(t *testing.T) {
+	root := gitRepo(t) // RULES.md:2 is uncommitted
+	s, ok := blame(root, "RULES.md", 2)
+	if !ok || s.Date != "uncommitted" {
+		t.Errorf("uncommitted line: %+v, want date uncommitted", s)
+	}
+
+	cmd := exec.Command("git", "-C", root, "commit", "-qam", "late")
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@e", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@e",
+		"GIT_AUTHOR_DATE=2026-10-21T21:14:23-04:00", "GIT_COMMITTER_DATE=2026-10-21T21:14:23-04:00")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("commit: %v\n%s", err, out)
+	}
+	if s, ok := blame(root, "RULES.md", 2); !ok || s.Date != "2026-10-21" {
+		t.Errorf("21:14 -0400 on the 21st: %+v, want 2026-10-21 (UTC says the 22nd)", s)
+	}
+}

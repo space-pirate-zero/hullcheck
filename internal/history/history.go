@@ -243,7 +243,11 @@ func blame(root, file string, line int) (Since, bool) {
 	if err != nil {
 		return Since{}, false
 	}
-	var s Since
+	var (
+		s    Since
+		secs int64
+		tz   = time.UTC
+	)
 	for i, l := range strings.Split(out, "\n") {
 		if i == 0 {
 			if f := strings.Fields(l); len(f) > 0 && len(f[0]) >= 8 {
@@ -251,15 +255,29 @@ func blame(root, file string, line int) (Since, bool) {
 			}
 			continue
 		}
-		if strings.HasPrefix(l, "author-time ") {
-			var secs int64
-			if _, err := fmt.Sscanf(strings.TrimPrefix(l, "author-time "), "%d", &secs); err == nil {
-				s.Date = time.Unix(secs, 0).UTC().Format("2006-01-02")
+		if v, ok := strings.CutPrefix(l, "author-time "); ok {
+			_, _ = fmt.Sscanf(v, "%d", &secs)
+		}
+		if v, ok := strings.CutPrefix(l, "author-tz "); ok {
+			if z, err := time.Parse("-0700", strings.TrimSpace(v)); err == nil {
+				tz = z.Location()
 			}
 		}
 	}
 	if s.Commit == "" {
 		return Since{}, false
+	}
+	// A line nobody has committed is not ungoverned since any date: it is
+	// ungoverned since it was typed, and blame's "now" would say otherwise.
+	if strings.Trim(s.Commit, "0") == "" {
+		s.Date = "uncommitted"
+		return s, true
+	}
+	// The date in the author's own zone, which is the date they would give and
+	// does not change with the zone of whoever reads it. UTC dated an evening
+	// commit in New York tomorrow.
+	if secs > 0 {
+		s.Date = time.Unix(secs, 0).In(tz).Format("2006-01-02")
 	}
 	// A tag containing the commit turns a hash into something a human recognises.
 	if t, err := git(root, "describe", "--tags", "--contains", s.Commit); err == nil {
