@@ -15,17 +15,17 @@ drifts, and the first hard signal is the one you cannot act on. Policy fails the
 way — quietly, and only when it matters.
 
 ```
-HULLCHECK reading .  (unverified - no manifest present)
+HULLCHECK reading .  (unverified - manifest present, run --verify)
 
-  12 rules found in 1 policy document
-  16 gates found in CI, hooks and checker scripts
+  15 rules found in 2 policy documents
+  20 gates found in CI, hooks and checker scripts
 
-  HOLD        12   rule has a gate, and something runs
+  HOLD        15   rule has a gate, and something runs
   BREACH       0   stated, nothing runs on it
   UNLOGGED     1   a gate runs, enforcing nothing anyone wrote down
 
-  TIME-TO-TRUTH        p50 12m    p90 12m    worst 12m
-    pull-request   12 gates   12m
+  TIME-TO-TRUTH        p50 5m     p90 5m     worst 5m
+    pre-push       15 gates   5m
 
   Gate Coverage  100%   weighted by severity  100%
 ```
