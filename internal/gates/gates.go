@@ -57,6 +57,8 @@ func Discover(root string) ([]model.Gate, error) {
 			out = append(out, preCommitGates(path, rel)...)
 		case name == "Makefile", name == "makefile", name == "GNUmakefile":
 			out = append(out, makeGates(path, rel)...)
+		case name == "project.yml", name == "project.yaml":
+			out = append(out, xcodegenGates(path, rel)...)
 		case strings.HasSuffix(name, ".rego"):
 			out = append(out, model.Gate{
 				ID: gid(rel, name), Kind: model.KindOPA, File: rel, Line: 1,
@@ -297,6 +299,162 @@ func makeGates(path, rel string) []model.Gate {
 		})
 	}
 	return out
+}
+
+// buildPhases are the xcodegen target keys whose scripts Xcode runs as build
+// phases, on every build of the target.
+var buildPhases = map[string]bool{
+	"preBuildScripts": true, "postCompileScripts": true, "postBuildScripts": true,
+}
+
+// xcodegenGates reads the build-phase scripts of an xcodegen spec: under
+// targets.<name>, each item of preBuildScripts, postCompileScripts and
+// postBuildScripts that has a script: or a path:. Like a CI run step, every
+// one is a potential gate; unlike one, it runs on every local build.
+//
+// A file called project.yml that has no top-level targets: is not an xcodegen
+// spec, and yields nothing.
+func xcodegenGates(path, rel string) []model.Gate {
+	lines, err := readLines(path)
+	if err != nil {
+		return nil
+	}
+	dir := filepath.ToSlash(filepath.Dir(rel))
+	var (
+		out                  []model.Gate
+		inTargets            bool
+		targetIndent         = -1
+		target               string
+		phaseIndent          = -1
+		blockIndent          = -1
+		itemLine             int
+		itemName, itemScript string
+	)
+	flush := func() {
+		if itemLine > 0 && itemScript != "" {
+			out = append(out, model.Gate{
+				ID:    fmt.Sprintf("%s::%s::%d", rel, target, itemLine),
+				Kind:  model.KindBuildPhase,
+				File:  rel,
+				Line:  itemLine,
+				Name:  orDefault(itemName, target),
+				Run:   itemScript,
+				Stage: model.Build,
+			})
+		}
+		itemLine, itemName, itemScript = 0, "", ""
+	}
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		// The body of a block scalar is shell, not keys, however it reads.
+		if blockIndent >= 0 && len(line)-len(strings.TrimLeft(line, " ")) > blockIndent {
+			continue
+		}
+		blockIndent = -1
+		if reComment.MatchString(line) {
+			continue
+		}
+		m := reYAMLKey.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		indent, key, val := len(m[1]), m[2], strings.TrimSpace(m[3])
+		item := strings.HasPrefix(strings.TrimSpace(line), "-")
+		if blockScalar(val) {
+			// Measured from the key, not the dash: in "- script: |" the block
+			// and the item's next key are both indented past the dash.
+			blockIndent = strings.Index(line, key)
+		}
+		// Leaving a list item, a phase list, a target or targets: closes it.
+		if phaseIndent >= 0 && (indent < phaseIndent || indent == phaseIndent && !item) {
+			flush()
+			phaseIndent = -1
+		}
+		if indent == 0 {
+			flush()
+			inTargets, targetIndent, target = key == "targets" && val == "", -1, ""
+			continue
+		}
+		if !inTargets {
+			continue
+		}
+		if targetIndent < 0 {
+			targetIndent = indent
+		}
+		if indent == targetIndent {
+			target = key
+			continue
+		}
+		if phaseIndent < 0 {
+			if buildPhases[key] && val == "" && target != "" {
+				phaseIndent = indent
+			}
+			continue
+		}
+		if item {
+			flush()
+			itemLine = i + 1
+		}
+		if blockScalar(val) {
+			val = firstBlockLine(lines, i+1)
+		}
+		switch key {
+		case "name":
+			itemName = unquoteYAML(val)
+		case "script":
+			itemScript = srcRoot(unquoteYAML(val), dir)
+		case "path":
+			// A path: phase runs a file, relative to the spec's directory.
+			if p := unquoteYAML(val); p != "" && itemScript == "" {
+				if !strings.HasPrefix(p, "/") && !strings.Contains(p, "$") {
+					p = filepath.ToSlash(filepath.Join(dir, p))
+				}
+				itemScript = p
+			}
+		}
+	}
+	flush()
+	return out
+}
+
+func blockScalar(val string) bool {
+	switch val {
+	case "|", ">", "|-", ">-", "|+", ">+":
+		return true
+	}
+	return false
+}
+
+// unquoteYAML strips one level of YAML quoting from a scalar.
+func unquoteYAML(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) >= 2 {
+		switch {
+		case s[0] == '\'' && s[len(s)-1] == '\'':
+			return strings.ReplaceAll(s[1:len(s)-1], "''", "'")
+		case s[0] == '"' && s[len(s)-1] == '"':
+			return s[1 : len(s)-1]
+		}
+	}
+	return s
+}
+
+// srcRoot rewrites Xcode's project-directory variables as the spec's directory
+// relative to the repository, so a phase that runs "${SRCROOT}/scripts/x.sh"
+// is seen to invoke the gate at scripts/x.sh, and can be run from the root.
+func srcRoot(script, dir string) string {
+	repl := ""
+	if dir != "." {
+		repl = dir + "/"
+	}
+	for _, v := range []string{"SRCROOT", "PROJECT_DIR"} {
+		for _, form := range []string{"${" + v + "}/", "$(" + v + ")/", "$" + v + "/"} {
+			script = strings.ReplaceAll(script, form, repl)
+		}
+	}
+	return script
 }
 
 func isCheckish(s string) bool {

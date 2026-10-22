@@ -56,9 +56,12 @@ type Stage string
 
 const (
 	PreCommit Stage = "pre-commit"
-	PullReq   Stage = "pull-request"
-	Nightly   Stage = "nightly"
-	Release   Stage = "release"
+	// Build: a build phase of the project itself, such as an Xcode run-script
+	// phase. It runs on every local build, before anything reaches a commit.
+	Build   Stage = "build"
+	PullReq Stage = "pull-request"
+	Nightly Stage = "nightly"
+	Release Stage = "release"
 	// Manual: the gate exists and works, but nothing schedules it. It runs only
 	// when a human remembers to run it, which is not a detection latency.
 	Manual Stage = "manual"
@@ -72,6 +75,8 @@ func (s Stage) Latency() int {
 	switch s {
 	case PreCommit:
 		return 10
+	case Build:
+		return 2 * 60
 	case PullReq:
 		return 12 * 60
 	case Nightly:
@@ -89,16 +94,18 @@ func (s Stage) Rank() int {
 	switch s {
 	case PreCommit:
 		return 0
-	case PullReq:
+	case Build:
 		return 1
-	case Nightly:
+	case PullReq:
 		return 2
-	case Release:
+	case Nightly:
 		return 3
-	case Manual:
+	case Release:
 		return 4
-	default:
+	case Manual:
 		return 5
+	default:
+		return 6
 	}
 }
 
@@ -112,6 +119,9 @@ const (
 	KindMakefile  Kind = "makefile"
 	KindOPA       Kind = "opa"
 	KindTest      Kind = "test"
+	// KindBuildPhase is a script the project's own build runs, e.g. an Xcode
+	// pre- or post-build script declared in an xcodegen project.yml.
+	KindBuildPhase Kind = "build-phase"
 )
 
 // Rule is a stated constraint found in a policy document.

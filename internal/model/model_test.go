@@ -3,7 +3,7 @@ package model
 import "testing"
 
 func TestStageLadderIsOrdered(t *testing.T) {
-	ladder := []Stage{PreCommit, PullReq, Nightly, Release, Manual, Never}
+	ladder := []Stage{PreCommit, Build, PullReq, Nightly, Release, Manual, Never}
 	for i := 1; i < len(ladder); i++ {
 		if ladder[i-1].Rank() >= ladder[i].Rank() {
 			t.Fatalf("%s must rank before %s", ladder[i-1], ladder[i])
@@ -12,7 +12,7 @@ func TestStageLadderIsOrdered(t *testing.T) {
 }
 
 func TestOnlyScheduledStagesHaveLatency(t *testing.T) {
-	for _, s := range []Stage{PreCommit, PullReq, Nightly, Release} {
+	for _, s := range []Stage{PreCommit, Build, PullReq, Nightly, Release} {
 		if s.Latency() < 0 {
 			t.Errorf("%s should have a latency", s)
 		}

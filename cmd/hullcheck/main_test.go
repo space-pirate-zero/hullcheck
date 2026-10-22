@@ -51,6 +51,21 @@ func TestExitZeroOnAReading(t *testing.T) {
 	}
 }
 
+func TestAPlainReadingNamesAManifestThatExists(t *testing.T) {
+	root := gated(t)
+	_, out, _ := run(t, "--no-banner", root)
+	if !strings.Contains(out, "no manifest present") {
+		t.Errorf("a repository without .hullcheck.yml should say so:\n%s", out)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".hullcheck.yml"), []byte("version: 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, out, _ = run(t, "--no-banner", root)
+	if strings.Contains(out, "no manifest present") || !strings.Contains(out, "manifest present, run --verify") {
+		t.Errorf("a repository with .hullcheck.yml must not claim it has none:\n%s", out)
+	}
+}
+
 func TestExitTwoWhenThereIsNoPolicy(t *testing.T) {
 	code, out, errOut := run(t, "--no-banner", t.TempDir())
 	if code != 2 {

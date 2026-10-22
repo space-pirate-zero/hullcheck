@@ -311,7 +311,7 @@ func execute(args []string, stdout, stderr io.Writer) int {
 	case *asMD:
 		report.Markdown(stdout, rep)
 	default:
-		report.Text(stdout, rep, verified)
+		report.Text(stdout, rep, verified, hasManifest(root))
 	}
 
 	if *failUnder >= 0 {
@@ -420,6 +420,14 @@ func set(fs *flag.FlagSet, name string) bool {
 		}
 	})
 	return found
+}
+
+// hasManifest reports whether root has a manifest, without parsing it: a plain
+// reading must say whether one exists, but must not fail on one it was not asked
+// to read.
+func hasManifest(root string) bool {
+	fi, err := os.Stat(filepath.Join(root, manifest.Name))
+	return err == nil && !fi.IsDir()
 }
 
 // diffOnly are the flags `hullcheck diff` acts on. Anything else the user gave is

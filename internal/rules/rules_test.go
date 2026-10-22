@@ -299,3 +299,48 @@ func TestAGateLineBeatsTheLengthGuard(t *testing.T) {
 		t.Fatalf("a short clause with no gate is still declined, got %+v", skipped)
 	}
 }
+
+func TestCleanStripsEmphasisButNotNames(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		// Emphasis goes, in both spellings.
+		{"**Every asset** must _record_ its __provenance__.", "Every asset must record its provenance."},
+		{"*Every* asset", "Every asset"},
+		// A code span is verbatim: its underscores and asterisks are the name.
+		{"`scripts/check_likeness.py`", "scripts/check_likeness.py"},
+		{"never run `gen_art.py` without --refs", "never run gen_art.py without --refs"},
+		{"globs like `src/**/*_test.go` are code", "globs like src/**/*_test.go are code"},
+		{"``a `tick` inside``", "a `tick` inside"},
+		// An underscore inside a word or path is not emphasis either.
+		{"call snake_case and scripts/check_likeness.py", "call snake_case and scripts/check_likeness.py"},
+		{"MAX_RETRIES is 3", "MAX_RETRIES is 3"},
+		// An unclosed backtick is dropped, not allowed to swallow the line.
+		{"an `unclosed tick_mark", "an unclosed tick_mark"},
+		{"  spaced   out  ", "spaced out"},
+	} {
+		if got := clean(tc.in); got != tc.want {
+			t.Errorf("clean(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestGateHintAndStatementKeepCodeSpanUnderscores(t *testing.T) {
+	root := fixture(t, map[string]string{
+		"CLAUDE.md": "# Rules\n\n" +
+			"- Portraits must always be rendered by `gen_art.py --refs`.\n" +
+			"  *Gate: `scripts/check_likeness.py`*\n",
+	})
+	rs, _, err := Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, ok := byID(rs, "CLAUDE-1")
+	if !ok {
+		t.Fatalf("rule not found: %+v", rs)
+	}
+	if want := "Portraits must always be rendered by gen_art.py --refs."; r.Statement != want {
+		t.Errorf("statement = %q, want %q", r.Statement, want)
+	}
+	if want := "scripts/check_likeness.py"; r.GateHint != want {
+		t.Errorf("gate hint = %q, want %q - a hint that loses its underscores names no gate", r.GateHint, want)
+	}
+}

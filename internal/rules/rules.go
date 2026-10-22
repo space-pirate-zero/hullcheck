@@ -16,6 +16,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/space-pirate-zero/hullcheck/internal/model"
 )
@@ -38,11 +40,10 @@ var (
 	// A bullet or plain sentence carrying an obligation.
 	reBullet = regexp.MustCompile(`^\s{0,3}(?:[-*+]|\d+\))\s+(\S.*)$`)
 	// An explicit gate annotation the repo already wrote, e.g. "*Gate: make preflight*".
-	reGate     = regexp.MustCompile(`(?i)^\s*[*_]{0,2}gate[*_]{0,2}\s*:\s*[*_]{0,2}(.+?)[*_]{0,2}\s*$`)
-	reFence    = regexp.MustCompile("^\\s{0,3}(```|~~~)")
-	reHeading  = regexp.MustCompile(`^\s{0,3}#{1,6}\s+(.+)$`)
-	reEmphasis = regexp.MustCompile(`[*_` + "`" + `]`)
-	reSpace    = regexp.MustCompile(`\s+`)
+	reGate    = regexp.MustCompile(`(?i)^\s*[*_]{0,2}gate[*_]{0,2}\s*:\s*[*_]{0,2}(.+?)[*_]{0,2}\s*$`)
+	reFence   = regexp.MustCompile("^\\s{0,3}(```|~~~)")
+	reHeading = regexp.MustCompile(`^\s{0,3}#{1,6}\s+(.+)$`)
+	reSpace   = regexp.MustCompile(`\s+`)
 )
 
 // strongModals denote a hard obligation. Their presence is what turns a sentence
@@ -399,8 +400,73 @@ func isWordByte(b byte) bool {
 		(b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
 }
 
+// clean strips Markdown emphasis from a statement or gate hint and collapses
+// its whitespace. It must not strip what is not emphasis: an underscore inside
+// a code span or inside a word is part of a name, and a hint cleaned from
+// `scripts/check_likeness.py` to "scripts/checklikeness.py" links to no gate.
 func clean(s string) string {
-	s = reEmphasis.ReplaceAllString(s, "")
-	s = reSpace.ReplaceAllString(s, " ")
-	return strings.TrimSpace(s)
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		if s[i] == '`' {
+			n := runLen(s, i, '`')
+			if j := closeSpan(s, i+n, n); j >= 0 {
+				// A code span is verbatim: only its delimiters go.
+				b.WriteString(s[i+n : j])
+				i = j + n
+				continue
+			}
+			// An unclosed backtick run is not a code span, and says nothing.
+			i += n
+			continue
+		}
+		switch s[i] {
+		case '*':
+			i++
+			continue
+		case '_':
+			// An underscore run is emphasis unless it sits inside a word, which
+			// is also where CommonMark refuses to read it as emphasis.
+			n := runLen(s, i, '_')
+			before, _ := utf8.DecodeLastRuneInString(s[:i])
+			after, _ := utf8.DecodeRuneInString(s[i+n:])
+			if isAlnum(before) && isAlnum(after) {
+				b.WriteString(s[i : i+n])
+			}
+			i += n
+			continue
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return strings.TrimSpace(reSpace.ReplaceAllString(b.String(), " "))
+}
+
+// closeSpan finds the backtick run of exactly n that closes a code span opened
+// before from, or -1. A run of another length is code, not a delimiter.
+func closeSpan(s string, from, n int) int {
+	for i := from; i < len(s); {
+		if s[i] != '`' {
+			i++
+			continue
+		}
+		m := runLen(s, i, '`')
+		if m == n {
+			return i
+		}
+		i += m
+	}
+	return -1
+}
+
+// runLen is the length of the run of c starting at s[i].
+func runLen(s string, i int, c byte) int {
+	n := 0
+	for i+n < len(s) && s[i+n] == c {
+		n++
+	}
+	return n
+}
+
+func isAlnum(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r)
 }

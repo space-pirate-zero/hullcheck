@@ -82,3 +82,48 @@ func TestReadingIsDeterministic(t *testing.T) {
 		}
 	}
 }
+
+// A Gate: hint written as a code span names the gate's path exactly, underscores
+// and all. Stripping them as emphasis once left the rule ungoverned.
+func TestCodeSpanGateHintLinksTheGate(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "CLAUDE.md", "# Rules\n\n"+
+		"- Portraits must always be conditioned on the reference photos.\n"+
+		"  *Gate: `scripts/check_likeness.py`*\n")
+	write(t, root, "scripts/check_likeness.py", "print('ok')\n")
+
+	rep, err := Run(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Findings) != 1 {
+		t.Fatalf("got %d findings, want 1: %+v", len(rep.Findings), rep.Findings)
+	}
+	f := rep.Findings[0]
+	if f.Verdict != "HOLD" || len(f.Gates) != 1 || f.Gates[0].File != "scripts/check_likeness.py" {
+		t.Errorf("rule should hold on scripts/check_likeness.py, got %s %+v (%s)", f.Verdict, f.Gates, f.Why)
+	}
+}
+
+// A rule whose gate an Xcode build phase runs is caught at build time, not left
+// to whoever remembers to run the checker by hand.
+func TestBuildPhaseGateReadsAsBuildStage(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "CLAUDE.md", "# Rules\n\n"+
+		"- Portraits must always be conditioned on the reference photos.\n"+
+		"  *Gate: `scripts/check_likeness.py`*\n")
+	write(t, root, "scripts/check_likeness.py", "print('ok')\n")
+	write(t, root, "project.yml", "targets:\n  App:\n    preBuildScripts:\n"+
+		"      - name: likeness\n        script: python3 \"${SRCROOT}/scripts/check_likeness.py\" .\n")
+
+	rep, err := Run(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Findings) != 1 {
+		t.Fatalf("got %d findings, want 1: %+v", len(rep.Findings), rep.Findings)
+	}
+	if got := rep.Findings[0].Stage(); got != "build" {
+		t.Errorf("stage = %q, want build - every local build runs the gate", got)
+	}
+}

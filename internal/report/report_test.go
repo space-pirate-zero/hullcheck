@@ -75,7 +75,7 @@ func TestDurationReadsLikeAnEngineer(t *testing.T) {
 
 func TestTextMentionsEveryVerdictAndTheDisclaimer(t *testing.T) {
 	var b bytes.Buffer
-	Text(&b, sample(), false)
+	Text(&b, sample(), false, false)
 	out := b.String()
 	for _, want := range []string{"HOLD", "BREACH", "UNLOGGED", "TIME-TO-TRUTH",
 		"Gate Coverage", "READING, not a score"} {
@@ -87,9 +87,30 @@ func TestTextMentionsEveryVerdictAndTheDisclaimer(t *testing.T) {
 
 func TestVerifiedOutputDropsTheDisclaimer(t *testing.T) {
 	var b bytes.Buffer
-	Text(&b, sample(), true)
+	Text(&b, sample(), true, true)
 	if strings.Contains(b.String(), "READING, not a score") {
 		t.Error("a verified run must not call itself unverified")
+	}
+}
+
+func TestUnverifiedHeaderSaysWhetherAManifestExists(t *testing.T) {
+	for _, tc := range []struct {
+		manifest      bool
+		want, notWant string
+		next          string
+	}{
+		{false, "(unverified - no manifest present)", "manifest present, run", "--print-manifest"},
+		{true, "(unverified - manifest present, run --verify)", "no manifest present", "Next:  hullcheck --verify"},
+	} {
+		var b bytes.Buffer
+		Text(&b, sample(), false, tc.manifest)
+		out := b.String()
+		if !strings.Contains(out, tc.want) || strings.Contains(out, tc.notWant) {
+			t.Errorf("manifest=%v: header should read %q\n%s", tc.manifest, tc.want, out)
+		}
+		if !strings.Contains(out, tc.next) {
+			t.Errorf("manifest=%v: next step should be %q\n%s", tc.manifest, tc.next, out)
+		}
 	}
 }
 
