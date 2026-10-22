@@ -1,7 +1,7 @@
 name: hullcheck
 description: >-
-  Report which of your stated engineering rules are actually enforced by
-  something that runs, and how long a violation survives before it is caught.
+  Report which of your stated engineering rules are enforced by something
+  that runs, and how long a violation survives.
 author: Spaceship Alpha 9
 branding:
   icon: shield
