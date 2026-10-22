@@ -8,6 +8,10 @@ CI here is local. There is no hosted CI: `make check` runs every gate, and the
 pre-push hook (`.githooks/pre-push`) runs the same gates before anything leaves your
 machine. Enable the hook once per clone with `make hooks`.
 
+GitHub runs nothing on a pull request, so its green tick means nothing here. Before
+a pull request is merged, check out its branch up to date with `main` and run
+`make check` on it; merge what passed, and say in the pull request that it did.
+
 ## 1. Engineering rules
 
 1.1 The core must have zero third-party dependencies. A supply-chain-adjacent tool

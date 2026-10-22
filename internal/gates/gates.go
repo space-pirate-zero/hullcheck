@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -502,48 +503,39 @@ func hookStage(rel string) model.Stage {
 }
 
 // hookGates makes each command in a hook script a gate, as each run step of a CI
-// job is. Lines that set the shell up or only talk cannot fail anything, so they
-// are not gates.
+// job is.
+//
+// A gate is named by its command, not by its hook. "pre-commit" is git's word,
+// not the repository's: as a name it would offer "commit" to every rule that
+// mentions committing, and link a rule about secrets to a lint hook.
 func hookGates(path, rel string, stage model.Stage) []model.Gate {
+	if !runnableHook(path, rel) {
+		return nil
+	}
 	lines, err := readLines(path)
 	if err != nil {
 		return nil
 	}
-	hook := filepath.Base(rel)
 	var out []model.Gate
-	for i := 0; i < len(lines); i++ {
-		n := i + 1
-		cmd := strings.TrimSpace(lines[i])
-		for strings.HasSuffix(cmd, "\\") && i+1 < len(lines) {
-			i++
-			cmd = strings.TrimSpace(strings.TrimSuffix(cmd, "\\")) + " " + strings.TrimSpace(lines[i])
-		}
-		cmd = strings.TrimSpace(strings.TrimPrefix(cmd, "exec "))
-		if cmd == "" || strings.HasPrefix(cmd, "#") || !hookCommand(cmd) {
-			continue
-		}
+	for _, c := range shellCommands(lines, 1) {
 		out = append(out, model.Gate{
-			ID: fmt.Sprintf("%s::%d", rel, n), Kind: model.KindGitHook,
-			File: rel, Line: n, Name: hook, Run: cmd, Stage: stage,
+			ID: fmt.Sprintf("%s::%d", rel, c.line), Kind: model.KindGitHook,
+			File: rel, Line: c.line, Name: c.run, Run: c.run, Stage: stage,
 		})
 	}
 	return out
 }
 
-// hookCommand reports whether a hook line runs something that can fail.
-func hookCommand(cmd string) bool {
-	first := strings.Fields(cmd)[0]
-	switch first {
-	case "set", "export", "unset", ".", "source", "cd", "echo", "printf", "exit",
-		"true", ":", "if", "then", "else", "elif", "fi", "for", "while", "until",
-		"do", "done", "case", "esac", "{", "}", ";;", "local", "readonly":
-		return false
+// runnableHook reports whether git would run the hook at all. git silently skips
+// a hook that is not executable, so one committed without +x enforces nothing.
+// husky is the exception: it runs its hooks through sh, executable or not. A
+// filesystem with no executable bit cannot answer, and is given the benefit.
+func runnableHook(path, rel string) bool {
+	if filepath.Base(filepath.Dir(rel)) == ".husky" || runtime.GOOS == "windows" {
+		return true
 	}
-	// A bare assignment, NAME=value, sets a variable and runs nothing.
-	if eq := strings.Index(first, "="); eq > 0 && first == cmd {
-		return false
-	}
-	return true
+	fi, err := os.Stat(path)
+	return err == nil && fi.Mode()&0o111 != 0
 }
 
 func isCheckish(s string) bool {

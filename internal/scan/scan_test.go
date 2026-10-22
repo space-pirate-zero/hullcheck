@@ -153,3 +153,21 @@ func TestCheckerAfterTheFirstLineOfABuildScriptReadsAsBuild(t *testing.T) {
 		t.Errorf("stage = %q, want build - the build phase calls the checker on its second line: %+v", f.Stage(), f.Gates)
 	}
 }
+
+// A rule about committing is not enforced by a hook just because git calls the
+// hook pre-commit.
+func TestAHookNameDoesNotGovernARule(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "RULES.md", "1.1 Secrets must never be committed; never commit a key.\n")
+	write(t, root, ".githooks/pre-commit", "#!/bin/sh\nnpx lint-staged\n")
+	if err := os.Chmod(filepath.Join(root, ".githooks", "pre-commit"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rep, err := Run(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f := rep.Findings[0]; f.Verdict != "BREACH" {
+		t.Errorf("verdict = %s (%s), want BREACH - nothing checks for secrets", f.Verdict, f.Why)
+	}
+}
